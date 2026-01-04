@@ -48,19 +48,28 @@ DEFAULT_CONFIG = {
     "discord": {
         "enabled": False,
         "webhook_url": "",
-        "notify_on": ["scan_complete", "vulnerability"]
+        "notify_on": ["scan_start", "scan_complete", "stage_complete", "vulnerability"],
+        "notify_stages": True,  # Send per-stage notifications with files
+        "upload_files": True    # Attach result files to notifications
     },
     "proxy": {
         "enabled": True,
         "use_proxychains": True
     },
     "rate_limits": {
-        "requests_per_second": 100,
-        "threads": 50
+        "requests_per_second": 50,  # Reduced default to prevent ISP issues
+        "threads": 25,              # Reduced default
+        "amass_dns_queries": 50,    # Amass-specific limit
+        "delay_between_tools": 2    # Seconds between tool runs
     },
     "scheduler": {
         "cron": "0 */6 * * *",
         "resume_on_boot": True
+    },
+    "network": {
+        "bandwidth_limit": "1M",     # Optional bandwidth limit
+        "connection_timeout": 10,
+        "max_retries": 2
     }
 }
 
@@ -192,31 +201,92 @@ class DiscordNotifier:
         self.config = load_config().get("discord", {})
         self.enabled = self.config.get("enabled", False)
         self.webhook_url = self.config.get("webhook_url", "")
+        self._rate_limit_until = 0
     
-    def send(self, title: str, message: str, color: int = 0x3498db):
+    def send(self, title: str, message: str, color: int = 0x3498db, file_path: Path = None):
         if not self.enabled or not self.webhook_url:
+            return
+        
+        # Rate limit protection
+        if time.time() < self._rate_limit_until:
             return
         
         try:
             import urllib.request
-            payload = json.dumps({
-                "embeds": [{
-                    "title": title,
-                    "description": message[:4000],
-                    "color": color,
-                    "footer": {"text": "Macaron"},
-                    "timestamp": get_timestamp()
-                }]
-            }).encode()
             
-            req = urllib.request.Request(
-                self.webhook_url,
-                data=payload,
-                headers={"Content-Type": "application/json"}
-            )
-            urllib.request.urlopen(req, timeout=10)
-        except:
-            pass
+            if file_path and file_path.exists() and file_path.stat().st_size < 8_000_000:
+                # Send with file attachment using multipart
+                self._send_with_file(title, message, color, file_path)
+            else:
+                # Send embed only
+                payload = json.dumps({
+                    "embeds": [{
+                        "title": title,
+                        "description": message[:4000],
+                        "color": color,
+                        "footer": {"text": "Macaron"},
+                        "timestamp": get_timestamp()
+                    }]
+                }).encode()
+                
+                req = urllib.request.Request(
+                    self.webhook_url,
+                    data=payload,
+                    headers={"Content-Type": "application/json"}
+                )
+                resp = urllib.request.urlopen(req, timeout=10)
+                
+                # Handle rate limits
+                if resp.status == 429:
+                    retry_after = float(resp.headers.get('Retry-After', 5))
+                    self._rate_limit_until = time.time() + retry_after
+        except Exception as e:
+            logger.debug(f"Discord notification failed: {e}")
+    
+    def _send_with_file(self, title: str, message: str, color: int, file_path: Path):
+        """Send message with file attachment"""
+        import urllib.request
+        import uuid
+        
+        boundary = f"----MacaronBoundary{uuid.uuid4().hex}"
+        
+        # Build multipart body
+        body = []
+        
+        # Add payload_json part
+        payload = {
+            "embeds": [{
+                "title": title,
+                "description": message[:4000],
+                "color": color,
+                "footer": {"text": "Macaron"},
+                "timestamp": get_timestamp()
+            }]
+        }
+        body.append(f"--{boundary}".encode())
+        body.append(b'Content-Disposition: form-data; name="payload_json"')
+        body.append(b'Content-Type: application/json')
+        body.append(b'')
+        body.append(json.dumps(payload).encode())
+        
+        # Add file part
+        body.append(f"--{boundary}".encode())
+        body.append(f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"'.encode())
+        body.append(b'Content-Type: text/plain')
+        body.append(b'')
+        body.append(file_path.read_bytes())
+        body.append(f"--{boundary}--".encode())
+        
+        body_bytes = b'\r\n'.join(body)
+        
+        req = urllib.request.Request(
+            self.webhook_url,
+            data=body_bytes,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}"
+            }
+        )
+        urllib.request.urlopen(req, timeout=30)
     
     def scan_start(self, targets: List[str], mode: str):
         self.send("🚀 Scan Started", 
@@ -236,6 +306,36 @@ class DiscordNotifier:
         self.send(f"⚠️ {severity.upper()}: {name}",
                   f"**Target:** {target}",
                   colors.get(severity.lower(), 0x7289da))
+    
+    def stage_complete(self, stage: str, target: str, count: int, file_path: Path = None):
+        """Notify when a stage completes with optional file attachment"""
+        emoji_map = {
+            "subdomains": "🔍",
+            "dns": "📡",
+            "ports": "🔌",
+            "http": "🌐",
+            "crawl": "🕷️",
+            "urls": "🔗",
+            "js": "📜",
+            "content": "📁",
+            "screenshots": "📸",
+            "vulns": "🎯"
+        }
+        emoji = emoji_map.get(stage, "✓")
+        self.send(
+            f"{emoji} Stage Complete: {stage.upper()}",
+            f"**Target:** {target}\n**Results:** {count} items found",
+            0x9b59b6,
+            file_path
+        )
+    
+    def progress(self, target: str, stage: str, tool: str, found: int):
+        """Real-time progress update (throttled to avoid spam)"""
+        self.send(
+            f"🔄 {tool}",
+            f"**Target:** {target}\n**Stage:** {stage}\n**Found:** {found}",
+            0x7289da
+        )
 
 # ============== SCAN ENGINE ==============
 
@@ -458,10 +558,18 @@ class MacaronEngine:
                 all_subs.update(subs)
                 logger.info(f"    Found {len(subs)}")
         
-        # Amass
+        # Amass - with strict rate limiting to prevent network overload
         if is_installed("amass"):
-            logger.info("  → amass (passive)")
-            code, out, _ = self._cmd(["amass", "enum", "-passive", "-d", ctx.target], 900)
+            logger.info("  → amass (passive, rate-limited)")
+            # Use passive mode with strict limits to avoid network overload
+            amass_cmd = [
+                "amass", "enum", 
+                "-passive",  # Passive only - no active DNS queries
+                "-d", ctx.target,
+                "-max-dns-queries", "50",  # Limit concurrent DNS
+                "-timeout", "10",  # 10 minute timeout
+            ]
+            code, out, _ = self._cmd(amass_cmd, 600)
             if code == 0:
                 subs = [l.strip() for l in out.split('\n') if l.strip()]
                 all_subs.update(subs)
@@ -516,7 +624,11 @@ class MacaronEngine:
         ctx.subdomains = {s.lower() for s in all_subs if ctx.target in s.lower()}
         
         logger.info(f"  ✓ Total unique: {len(ctx.subdomains)}")
-        save_list(ctx.output_dir / "subdomains.txt", ctx.subdomains)
+        subdomains_file = ctx.output_dir / "subdomains.txt"
+        save_list(subdomains_file, ctx.subdomains)
+        
+        # Discord notification with file
+        self.notifier.stage_complete("subdomains", ctx.target, len(ctx.subdomains), subdomains_file)
         
         return ctx
     
@@ -553,8 +665,12 @@ class MacaronEngine:
                 Path(temp_file).unlink(missing_ok=True)
         
         logger.info(f"  ✓ Resolved: {len(ctx.resolved)}")
-        save_list(ctx.output_dir / "resolved.txt", 
+        resolved_file = ctx.output_dir / "resolved.txt"
+        save_list(resolved_file, 
                   [f"{h}: {', '.join(ips)}" for h, ips in ctx.resolved.items()])
+        
+        # Discord notification
+        self.notifier.stage_complete("dns", ctx.target, len(ctx.resolved), resolved_file)
         
         return ctx
     
@@ -597,8 +713,12 @@ class MacaronEngine:
         
         total_ports = sum(len(p) for p in ctx.ports.values())
         logger.info(f"  ✓ Open ports: {total_ports}")
-        save_list(ctx.output_dir / "ports.txt",
+        ports_file = ctx.output_dir / "ports.txt"
+        save_list(ports_file,
                   [f"{h}:{p}" for h, ports in ctx.ports.items() for p in ports])
+        
+        # Discord notification
+        self.notifier.stage_complete("ports", ctx.target, total_ports, ports_file)
         
         return ctx
     
@@ -690,9 +810,14 @@ class MacaronEngine:
                 Path(temp_file).unlink(missing_ok=True)
         
         logger.info(f"  ✓ Live hosts: {len(ctx.live_hosts)}")
-        save_list(ctx.output_dir / "live_hosts.txt", ctx.live_hosts)
-        save_list(ctx.output_dir / "technologies.txt",
+        live_file = ctx.output_dir / "live_hosts.txt"
+        tech_file = ctx.output_dir / "technologies.txt"
+        save_list(live_file, ctx.live_hosts)
+        save_list(tech_file,
                   [f"{h}: {', '.join(t)}" for h, t in ctx.technologies.items()])
+        
+        # Discord notification
+        self.notifier.stage_complete("http", ctx.target, len(ctx.live_hosts), live_file)
         
         return ctx
     
@@ -761,8 +886,13 @@ class MacaronEngine:
         ctx.js_files = {u for u in all_urls if u.endswith('.js') or ('.js?' in u)}
         
         logger.info(f"  ✓ Total URLs: {len(ctx.urls)}, JS files: {len(ctx.js_files)}")
-        save_list(ctx.output_dir / "urls.txt", ctx.urls)
-        save_list(ctx.output_dir / "js_files.txt", ctx.js_files)
+        urls_file = ctx.output_dir / "urls.txt"
+        js_file = ctx.output_dir / "js_files.txt"
+        save_list(urls_file, ctx.urls)
+        save_list(js_file, ctx.js_files)
+        
+        # Discord notification
+        self.notifier.stage_complete("urls", ctx.target, len(ctx.urls), urls_file)
         
         return ctx
     
@@ -805,7 +935,11 @@ class MacaronEngine:
         ctx.js_files = {u for u in all_urls if '.js' in u}
         
         logger.info(f"  ✓ Total URLs: {len(ctx.urls)}")
-        save_list(ctx.output_dir / "urls.txt", ctx.urls)
+        urls_file = ctx.output_dir / "urls.txt"
+        save_list(urls_file, ctx.urls)
+        
+        # Discord notification
+        self.notifier.stage_complete("crawl", ctx.target, len(ctx.urls), urls_file)
         
         return ctx
     
@@ -876,8 +1010,13 @@ class MacaronEngine:
                     ctx.endpoints.update(endpoints)
         
         logger.info(f"  ✓ JS files: {len(ctx.js_files)}, Endpoints: {len(ctx.endpoints)}")
-        save_list(ctx.output_dir / "js_files.txt", ctx.js_files)
-        save_list(ctx.output_dir / "endpoints.txt", ctx.endpoints)
+        js_file = ctx.output_dir / "js_files.txt"
+        endpoints_file = ctx.output_dir / "endpoints.txt"
+        save_list(js_file, ctx.js_files)
+        save_list(endpoints_file, ctx.endpoints)
+        
+        # Discord notification
+        self.notifier.stage_complete("js", ctx.target, len(ctx.endpoints), endpoints_file)
         
         return ctx
     
@@ -1012,6 +1151,14 @@ class MacaronEngine:
                 Path(temp_file).unlink(missing_ok=True)
         
         logger.info(f"  ✓ Vulnerabilities: {len(ctx.vulnerabilities)}")
+        
+        # Save vuln results and notify
+        vulns_file = ctx.output_dir / "vulnerabilities.json"
+        with open(vulns_file, 'w') as f:
+            json.dump(ctx.vulnerabilities, f, indent=2)
+        
+        # Discord notification
+        self.notifier.stage_complete("vulns", ctx.target, len(ctx.vulnerabilities), vulns_file)
         
         return ctx
     
