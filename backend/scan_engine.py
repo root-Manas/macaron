@@ -1171,15 +1171,6 @@ if __name__ == "__main__":
     print("SCAN RESULTS")
     print("="*60)
     print(json.dumps(stats, indent=2))
-                    "current_module": self.state.current_module,
-                    "current_tool": self.state.current_tool,
-                    "completed_modules": self.state.completed_modules,
-                    "status": self.state.status.value,
-                    "started_at": self.state.started_at,
-                    "last_updated": get_timestamp(),
-                    "error_count": self.state.error_count,
-                    "resume_data": self.state.resume_data
-                }, f, indent=2)
     
     def _load_state(self) -> Optional[ScanState]:
         """Load saved scan state"""

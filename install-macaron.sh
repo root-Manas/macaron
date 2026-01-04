@@ -1,5 +1,5 @@
 #!/bin/bash
-# MACARON Installer
+# Security Recon Platform Installer
 # Usage: curl -sL https://raw.githubusercontent.com/.../install.sh | bash
 
 set -e
@@ -11,7 +11,7 @@ echo "
 ██║╚██╔╝██║██╔══██║██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║
 ██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║
 ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
-               INSTALLER
+               Security Recon Platform - INSTALLER
 "
 
 # Colors

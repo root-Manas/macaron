@@ -32,7 +32,7 @@ BANNER = """
 ██║╚██╔╝██║██╔══██║██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║
 ██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║
 ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
-        Massive Automated Comprehensive Asset Recon v{version}
+        Security Reconnaissance Platform v{version}
 """
 
 # Default directories
@@ -199,7 +199,7 @@ class DiscordNotifier:
                     "title": title,
                     "description": message[:4000],
                     "color": color,
-                    "footer": {"text": "Macaron Recon"},
+                    "footer": {"text": "Security Recon"},
                     "timestamp": get_timestamp()
                 }]
             }).encode()
@@ -1210,7 +1210,7 @@ def cmd_add(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="macaron",
-        description="MACARON - Massive Automated Comprehensive Asset Reconnaissance",
+        description="Security Reconnaissance Platform",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

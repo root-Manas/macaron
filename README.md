@@ -1,6 +1,4 @@
-# MACARON 🍪
-
-**M**assive **A**utomated **C**omprehensive **A**sset **R**econnaissance & **O**ffensive **N**exus
+# Security Recon Platform 🔍
 
 A single unified CLI tool for automated security reconnaissance. Chains all recon tools efficiently, filters targets for manual testing, and sends Discord notifications.
 
