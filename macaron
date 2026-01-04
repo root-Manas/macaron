@@ -32,7 +32,7 @@ BANNER = """
 ██║╚██╔╝██║██╔══██║██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║
 ██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║
 ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
-        Security Reconnaissance Platform v{version}
+        Macaron v{version}
 """
 
 # Default directories
@@ -199,7 +199,7 @@ class DiscordNotifier:
                     "title": title,
                     "description": message[:4000],
                     "color": color,
-                    "footer": {"text": "Security Recon"},
+                    "footer": {"text": "Macaron"},
                     "timestamp": get_timestamp()
                 }]
             }).encode()
@@ -1205,12 +1205,303 @@ def cmd_add(args):
     
     return 0
 
+
+def cmd_status(args):
+    """Show current scan status"""
+    state_file = STATE_DIR / "scan_state.json"
+    
+    print("\n\033[1m=== MACARON STATUS ===\033[0m\n")
+    
+    # Check if scan is running
+    if state_file.exists():
+        with open(state_file) as f:
+            state = json.load(f)
+        
+        status = state.get("status", "unknown")
+        status_color = {
+            "running": "\033[33m",  # Yellow
+            "completed": "\033[32m",  # Green
+            "failed": "\033[31m",  # Red
+            "paused": "\033[36m"  # Cyan
+        }.get(status, "\033[0m")
+        
+        print(f"  Status:  {status_color}{status.upper()}\033[0m")
+        print(f"  Target:  {state.get('current_target', 'N/A')}")
+        print(f"  Module:  {state.get('current_module', 'N/A')}")
+        print(f"  Started: {state.get('start_time', 'N/A')}")
+        
+        if state.get("targets"):
+            progress = f"{state.get('target_index', 0) + 1}/{len(state['targets'])}"
+            print(f"  Progress: {progress} targets")
+    else:
+        print("  Status:  \033[32mIDLE\033[0m (no active scan)")
+    
+    # Show stats summary
+    print("\n\033[1m=== DATA SUMMARY ===\033[0m\n")
+    
+    if DATA_DIR.exists():
+        total_subs = 0
+        total_live = 0
+        total_urls = 0
+        total_vulns = 0
+        
+        for target_dir in DATA_DIR.iterdir():
+            if target_dir.is_dir():
+                sub_file = target_dir / "subdomains.txt"
+                live_file = target_dir / "live_hosts.txt"
+                url_file = target_dir / "urls.txt"
+                vuln_file = target_dir / "vulnerabilities.json"
+                
+                if sub_file.exists():
+                    total_subs += len(load_list(sub_file))
+                if live_file.exists():
+                    total_live += len(load_list(live_file))
+                if url_file.exists():
+                    total_urls += len(load_list(url_file))
+                if vuln_file.exists():
+                    with open(vuln_file) as f:
+                        vulns = json.load(f)
+                        total_vulns += len(vulns) if isinstance(vulns, list) else 0
+        
+        domains = len([d for d in DATA_DIR.iterdir() if d.is_dir()])
+        print(f"  Domains:     {domains}")
+        print(f"  Subdomains:  \033[34m{total_subs}\033[0m")
+        print(f"  Live Hosts:  \033[32m{total_live}\033[0m")
+        print(f"  URLs:        \033[33m{total_urls}\033[0m")
+        print(f"  Vulns:       \033[31m{total_vulns}\033[0m")
+    else:
+        print("  No data collected yet")
+    
+    print()
+    return 0
+
+
+def cmd_show(args):
+    """Show detailed results for a domain or all"""
+    if not DATA_DIR.exists():
+        print("No results yet. Run a scan first.")
+        return 1
+    
+    domain = args.domain
+    what = args.what or "all"
+    limit = args.limit or 50
+    
+    # Find matching directories
+    targets = []
+    for d in DATA_DIR.iterdir():
+        if d.is_dir():
+            if not domain or domain.lower() in d.name.lower():
+                targets.append(d)
+    
+    if not targets:
+        print(f"No results found" + (f" for '{domain}'" if domain else ""))
+        return 1
+    
+    for target_dir in sorted(targets):
+        print(f"\n\033[1;32m{'='*60}\033[0m")
+        print(f"\033[1;32m {target_dir.name}\033[0m")
+        print(f"\033[1;32m{'='*60}\033[0m")
+        
+        if what in ["all", "subdomains", "subs"]:
+            sub_file = target_dir / "subdomains.txt"
+            if sub_file.exists():
+                subs = load_list(sub_file)
+                print(f"\n\033[1;34m[SUBDOMAINS] ({len(subs)} total)\033[0m")
+                for s in subs[:limit]:
+                    print(f"  {s}")
+                if len(subs) > limit:
+                    print(f"  ... and {len(subs) - limit} more")
+        
+        if what in ["all", "live", "hosts"]:
+            live_file = target_dir / "live_hosts.txt"
+            if live_file.exists():
+                hosts = load_list(live_file)
+                print(f"\n\033[1;32m[LIVE HOSTS] ({len(hosts)} total)\033[0m")
+                for h in hosts[:limit]:
+                    print(f"  {h}")
+                if len(hosts) > limit:
+                    print(f"  ... and {len(hosts) - limit} more")
+        
+        if what in ["all", "ports"]:
+            ports_file = target_dir / "ports.txt"
+            if ports_file.exists():
+                ports = load_list(ports_file)
+                print(f"\n\033[1;33m[OPEN PORTS] ({len(ports)} total)\033[0m")
+                for p in ports[:limit]:
+                    print(f"  {p}")
+                if len(ports) > limit:
+                    print(f"  ... and {len(ports) - limit} more")
+        
+        if what in ["all", "urls"]:
+            url_file = target_dir / "urls.txt"
+            if url_file.exists():
+                urls = load_list(url_file)
+                print(f"\n\033[1;36m[URLS] ({len(urls)} total)\033[0m")
+                for u in urls[:limit]:
+                    print(f"  {u}")
+                if len(urls) > limit:
+                    print(f"  ... and {len(urls) - limit} more")
+        
+        if what in ["all", "js"]:
+            js_file = target_dir / "js_files.txt"
+            if js_file.exists():
+                js = load_list(js_file)
+                print(f"\n\033[1;35m[JS FILES] ({len(js)} total)\033[0m")
+                for j in js[:limit]:
+                    print(f"  {j}")
+                if len(js) > limit:
+                    print(f"  ... and {len(js) - limit} more")
+        
+        if what in ["all", "vulns", "vulnerabilities"]:
+            vuln_file = target_dir / "vulnerabilities.json"
+            nuclei_file = target_dir / "nuclei.json"
+            
+            vulns = []
+            for vf in [vuln_file, nuclei_file]:
+                if vf.exists():
+                    with open(vf) as f:
+                        content = f.read().strip()
+                        if content:
+                            # Handle JSONL format
+                            for line in content.split('\n'):
+                                if line.strip():
+                                    try:
+                                        vulns.append(json.loads(line))
+                                    except:
+                                        pass
+            
+            if vulns:
+                # Sort by severity
+                severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+                vulns.sort(key=lambda v: severity_order.get(
+                    v.get("info", {}).get("severity", "info").lower(), 5))
+                
+                print(f"\n\033[1;31m[VULNERABILITIES] ({len(vulns)} total)\033[0m")
+                
+                sev_colors = {
+                    "critical": "\033[1;31m",
+                    "high": "\033[31m",
+                    "medium": "\033[33m",
+                    "low": "\033[32m",
+                    "info": "\033[36m"
+                }
+                
+                for v in vulns[:limit]:
+                    name = v.get("info", {}).get("name", v.get("template-id", "Unknown"))
+                    sev = v.get("info", {}).get("severity", "info").lower()
+                    host = v.get("host", v.get("matched-at", ""))
+                    color = sev_colors.get(sev, "\033[0m")
+                    print(f"  {color}[{sev.upper():8}]\033[0m {name}")
+                    if host:
+                        print(f"             └─ {host}")
+                
+                if len(vulns) > limit:
+                    print(f"  ... and {len(vulns) - limit} more")
+        
+        if what in ["all", "tech"]:
+            tech_file = target_dir / "technologies.json"
+            if tech_file.exists():
+                with open(tech_file) as f:
+                    tech = json.load(f)
+                print(f"\n\033[1;35m[TECHNOLOGIES]\033[0m")
+                for host, techs in list(tech.items())[:limit]:
+                    print(f"  {host}: {', '.join(techs)}")
+    
+    print()
+    return 0
+
+
+def cmd_watch(args):
+    """Live monitoring of scan progress"""
+    import select
+    
+    print("\033[2J\033[H")  # Clear screen
+    print("\033[1mMACARRON LIVE MONITOR\033[0m (Press Ctrl+C to exit)\n")
+    
+    state_file = STATE_DIR / "scan_state.json"
+    log_file = LOGS_DIR / "scan.log"
+    
+    last_log_pos = 0
+    if log_file.exists():
+        last_log_pos = log_file.stat().st_size
+    
+    try:
+        while True:
+            # Print status header
+            print("\033[3;0H")  # Move cursor to line 3
+            
+            if state_file.exists():
+                with open(state_file) as f:
+                    state = json.load(f)
+                
+                status = state.get("status", "unknown")
+                status_color = {
+                    "running": "\033[33m",
+                    "completed": "\033[32m",
+                    "failed": "\033[31m",
+                    "paused": "\033[36m"
+                }.get(status, "\033[0m")
+                
+                target = state.get("current_target", "N/A")
+                module = state.get("current_module", "N/A")
+                started = state.get("start_time", "N/A")
+                
+                # Progress bar
+                targets_list = state.get("targets", [])
+                idx = state.get("target_index", 0)
+                progress = 0
+                if targets_list:
+                    progress = int((idx / len(targets_list)) * 40)
+                
+                bar = f"[{'█' * progress}{'░' * (40 - progress)}]"
+                
+                print(f"  Status:   {status_color}{status.upper():12}\033[0m  Target: {target}")
+                print(f"  Module:   {module:20}  Started: {started}")
+                print(f"  Progress: {bar} {idx}/{len(targets_list)}")
+                print()
+                print("\033[1mRecent Activity:\033[0m")
+                print("-" * 60)
+            else:
+                print("  No active scan. Waiting...")
+                print()
+                print("\033[1mRecent Activity:\033[0m")
+                print("-" * 60)
+            
+            # Show recent log entries
+            if log_file.exists():
+                current_size = log_file.stat().st_size
+                if current_size > last_log_pos:
+                    with open(log_file) as f:
+                        f.seek(last_log_pos)
+                        new_lines = f.read()
+                        for line in new_lines.strip().split('\n')[-20:]:
+                            if line.strip():
+                                # Color code log levels
+                                if "ERROR" in line:
+                                    print(f"\033[31m{line[:100]}\033[0m")
+                                elif "WARNING" in line:
+                                    print(f"\033[33m{line[:100]}\033[0m")
+                                elif "INFO" in line:
+                                    print(f"\033[32m{line[:100]}\033[0m")
+                                else:
+                                    print(line[:100])
+                        last_log_pos = current_size
+            
+            time.sleep(args.interval if hasattr(args, 'interval') else 2)
+            
+    except KeyboardInterrupt:
+        print("\n\033[0mMonitor stopped.")
+        return 0
+    
+    return 0
+
+
 # ============== MAIN ==============
 
 def main():
     parser = argparse.ArgumentParser(
         prog="macaron",
-        description="Security Reconnaissance Platform",
+        description="Macaron - Security Reconnaissance Platform",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1218,6 +1509,10 @@ Examples:
   macaron scan -t app.example.com -m narrow   # Narrow application scan
   macaron scan -f targets.txt              # Scan from file
   macaron scan -t target.com --no-proxy    # Without proxychains
+  macaron status                           # Show scan status & summary
+  macaron show -d example.com              # View all results for domain
+  macaron show -w vulns                    # Show only vulnerabilities
+  macaron watch                            # Live monitor scan progress
   macaron list tools                       # Show installed tools
   macaron config webhook --url URL         # Set Discord webhook
   macaron export -o results.json           # Export all data
@@ -1264,6 +1559,20 @@ Examples:
     add_p = subparsers.add_parser("add", help="Add targets to saved list")
     add_p.add_argument("targets", nargs="+", help="Targets to add")
     
+    # Status - NEW
+    subparsers.add_parser("status", help="Show current scan status and summary")
+    
+    # Show - NEW
+    show_p = subparsers.add_parser("show", help="Show detailed results")
+    show_p.add_argument("-d", "--domain", help="Filter by domain")
+    show_p.add_argument("-w", "--what", choices=["all", "subdomains", "subs", "live", "hosts", "ports", "urls", "js", "vulns", "tech"],
+                        default="all", help="What to show")
+    show_p.add_argument("-n", "--limit", type=int, default=50, help="Limit results per category")
+    
+    # Watch - NEW
+    watch_p = subparsers.add_parser("watch", help="Live monitor scan progress")
+    watch_p.add_argument("-i", "--interval", type=int, default=2, help="Refresh interval in seconds")
+    
     args = parser.parse_args()
     
     # Setup logging
@@ -1285,6 +1594,9 @@ Examples:
         "list": cmd_list,
         "export": cmd_export,
         "add": cmd_add,
+        "status": cmd_status,
+        "show": cmd_show,
+        "watch": cmd_watch,
     }
     
     return commands.get(args.command, lambda _: parser.print_help())(args)
