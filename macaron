@@ -825,9 +825,50 @@ class MacaronEngine:
                     js = [l.strip() for l in out.split('\n') if l.strip() and '.js' in l]
                     ctx.js_files.update(js)
         
-        # LinkFinder
-        if is_installed("linkfinder") and ctx.js_files:
-            logger.info("  → linkfinder")
+        # xnLinkFinder (https://github.com/xnl-h4ck3r/xnLinkFinder)
+        if is_installed("xnLinkFinder") and (ctx.js_files or ctx.live_hosts):
+            logger.info("  → xnLinkFinder")
+            
+            # xnLinkFinder can process URLs directly and find endpoints, params, etc.
+            targets_for_linkfinder = list(ctx.live_hosts)[:10] if ctx.live_hosts else []
+            
+            if targets_for_linkfinder:
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                    f.write('\n'.join(targets_for_linkfinder))
+                    temp_file = f.name
+                
+                try:
+                    # xnLinkFinder with depth 2, finding endpoints and parameters
+                    output_dir = ctx.output_dir / "linkfinder"
+                    ensure_dir(output_dir)
+                    
+                    code, out, _ = self._cmd([
+                        "xnLinkFinder", "-i", temp_file, 
+                        "-o", str(output_dir / "endpoints.txt"),
+                        "-op", str(output_dir / "parameters.txt"),
+                        "-d", "2",  # Depth
+                        "-sp", str(ctx.output_dir),  # Scope prefix
+                        "--include", ctx.target,  # Stay in scope
+                    ], 600)
+                    
+                    if code == 0:
+                        # Parse output files
+                        endpoints_file = output_dir / "endpoints.txt"
+                        if endpoints_file.exists():
+                            endpoints = load_list(endpoints_file)
+                            ctx.endpoints.update(endpoints)
+                            logger.info(f"    Found {len(endpoints)} endpoints")
+                        
+                        params_file = output_dir / "parameters.txt"
+                        if params_file.exists():
+                            params = load_list(params_file)
+                            logger.info(f"    Found {len(params)} parameters")
+                finally:
+                    Path(temp_file).unlink(missing_ok=True)
+        
+        # Fallback to legacy linkfinder if xnLinkFinder not available
+        elif is_installed("linkfinder") and ctx.js_files:
+            logger.info("  → linkfinder (legacy)")
             for js_url in list(ctx.js_files)[:20]:
                 code, out, _ = self._cmd(["linkfinder", "-i", js_url, "-o", "cli"], 60)
                 if code == 0:
@@ -1093,7 +1134,13 @@ def cmd_install(args):
     
     # Python tools
     print("  Installing Python tools...")
-    subprocess.run(["pip3", "install", "-q", "waymore", "linkfinder"], capture_output=True)
+    subprocess.run(["pip3", "install", "-q", "waymore"], capture_output=True)
+    
+    # xnLinkFinder (better maintained than legacy linkfinder)
+    print("  Installing xnLinkFinder...")
+    subprocess.run([
+        "pip3", "install", "-q", "xnLinkFinder"
+    ], capture_output=True)
     
     # Findomain
     if not is_installed("findomain"):
@@ -1128,7 +1175,7 @@ def cmd_install(args):
     
     tools = ["subfinder", "amass", "assetfinder", "findomain", "httpx", "dnsx", 
              "naabu", "nuclei", "katana", "gau", "waybackurls", "ffuf", "gowitness",
-             "hakrawler", "getJS", "waymore", "linkfinder"]
+             "hakrawler", "getJS", "waymore", "xnLinkFinder"]
     
     for tool in tools:
         status = "✓" if is_installed(tool) else "✗"
@@ -1193,7 +1240,7 @@ def cmd_list(args):
             "Port Scanning": ["naabu", "masscan", "nmap"],
             "HTTP Probing": ["httpx", "httprobe"],
             "URL Discovery": ["gau", "waymore", "waybackurls", "katana", "hakrawler"],
-            "JS Analysis": ["getJS", "linkfinder", "secretfinder"],
+            "JS Analysis": ["getJS", "xnLinkFinder", "secretfinder"],
             "Content Discovery": ["ffuf", "feroxbuster", "dirsearch"],
             "Vuln Scanning": ["nuclei", "nikto"],
             "Screenshots": ["gowitness", "eyewitness"],
@@ -1639,7 +1686,7 @@ def cmd_verify(args):
         "chaos": "go install github.com/projectdiscovery/chaos-client/cmd/chaos@latest",
         "hakrawler": "go install github.com/hakluke/hakrawler@latest",
         "waymore": "pip3 install waymore",
-        "linkfinder": "pip3 install linkfinder",
+        "xnLinkFinder": "pip3 install xnLinkFinder",
         "getJS": "go install github.com/003random/getJS@latest",
     }
     
