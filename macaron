@@ -677,7 +677,7 @@ class MacaronEngine:
                 all_urls.update(urls)
         
         ctx.urls = all_urls
-        ctx.js_files = {u for u in all_urls if '.js' in u and '?' not in u.split('.js')[1] if '.js' in u else '.js' in u}
+        ctx.js_files = {u for u in all_urls if u.endswith('.js') or ('.js?' in u)}
         
         logger.info(f"  ✓ Total URLs: {len(ctx.urls)}, JS files: {len(ctx.js_files)}")
         save_list(ctx.output_dir / "urls.txt", ctx.urls)
