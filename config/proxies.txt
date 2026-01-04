@@ -1,0 +1,5 @@
+# Add your proxy list here
+# Format: protocol://host:port
+# Example:
+# socks5://127.0.0.1:9050
+# http://proxy.example.com:8080

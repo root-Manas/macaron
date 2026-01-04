@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Security Recon Platform</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen" x-data="dashboard()" x-init="init()">
+    <nav class="bg-gray-800 border-b border-gray-700 p-4">
+        <span class="text-xl font-bold text-green-400">Security Recon Platform</span>
+    </nav>
+    <div class="max-w-7xl mx-auto p-8">
+        <div class="grid grid-cols-5 gap-4 mb-8">
+            <div class="bg-gray-800 rounded p-4"><div class="text-gray-400">Domains</div><div class="text-2xl" x-text="stats.domains">0</div></div>
+            <div class="bg-gray-800 rounded p-4"><div class="text-gray-400">Subdomains</div><div class="text-2xl text-blue-400" x-text="stats.subdomains">0</div></div>
+            <div class="bg-gray-800 rounded p-4"><div class="text-gray-400">Live Hosts</div><div class="text-2xl text-green-400" x-text="stats.live_hosts">0</div></div>
+            <div class="bg-gray-800 rounded p-4"><div class="text-gray-400">Open Ports</div><div class="text-2xl text-yellow-400" x-text="stats.open_ports">0</div></div>
+            <div class="bg-gray-800 rounded p-4"><div class="text-gray-400">Vulns</div><div class="text-2xl text-red-400" x-text="stats.vulnerabilities?.total||0">0</div></div>
+        </div>
+        <div class="grid grid-cols-3 gap-8">
+            <div class="space-y-6">
+                <div class="bg-gray-800 rounded p-6">
+                    <h2 class="text-xl font-bold mb-4">Start Scan</h2>
+                    <textarea x-model="newScan.targets" class="w-full bg-gray-700 rounded p-2 h-24" placeholder="Targets"></textarea>
+                    <button @click="startScan()" class="w-full bg-green-600 hover:bg-green-700 py-2 rounded mt-4">Start</button>
+                </div>
+                <div class="bg-gray-800 rounded p-6">
+                    <h2 class="text-xl font-bold mb-4">Targets</h2>
+                    <div class="flex mb-4"><input x-model="newTarget" class="flex-1 bg-gray-700 rounded-l p-2"><button @click="addTarget()" class="bg-green-600 px-4 rounded-r">+</button></div>
+                    <ul class="space-y-2"><template x-for="t in targets"><li class="bg-gray-700 rounded p-2 flex justify-between"><span x-text="t"></span><button @click="deleteTarget(t)" class="text-red-400">x</button></li></template></ul>
+                </div>
+            </div>
+            <div class="col-span-2 space-y-6">
+                <div class="bg-gray-800 rounded p-6">
+                    <h2 class="text-xl font-bold mb-4">Results</h2>
+                    <div class="space-y-4"><template x-for="(d,domain) in results"><div class="bg-gray-700 rounded p-4"><h3 class="text-green-400" x-text="domain"></h3><div class="grid grid-cols-3 gap-4 mt-2 text-sm"><div>Subs: <span x-text="d.subdomains?.length||0"></span></div><div>Live: <span x-text="d.live_hosts?.length||0"></span></div><div>Vulns: <span x-text="d.vulnerabilities?.length||0"></span></div></div></div></template></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+    function dashboard(){return{status:{},stats:{vulnerabilities:{}},targets:[],tools:{},results:{},newTarget:'',newScan:{targets:''},async init(){await this.refresh();setInterval(()=>this.refresh(),10000)},async refresh(){try{const[s,st,t,to,r]=await Promise.all([fetch('/api/status').then(r=>r.json()),fetch('/api/stats').then(r=>r.json()),fetch('/api/targets').then(r=>r.json()),fetch('/api/tools').then(r=>r.json()),fetch('/api/results').then(r=>r.json())]);this.status=s;this.stats=st;this.targets=t.targets||[];this.tools=to;this.results=r.results||{}}catch(e){console.error(e)}},async startScan(){const t=this.newScan.targets.split('\n').filter(x=>x.trim());if(!t.length)return;await fetch('/api/scan/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targets:t})});this.newScan.targets='';this.refresh()},async addTarget(){if(this.newTarget.trim()){await fetch('/api/targets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:this.newTarget})});this.newTarget='';this.refresh()}},async deleteTarget(d){await fetch('/api/targets/'+d,{method:'DELETE'});this.refresh()}}}
+    </script>
+</body>
+</html>

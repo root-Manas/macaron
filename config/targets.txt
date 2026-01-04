@@ -1,0 +1,6 @@
+# Add your target domains here, one per line
+# Lines starting with # are ignored
+# Example:
+# example.com
+# target.com
+# *.wildcard.com

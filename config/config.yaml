@@ -1,0 +1,227 @@
+# Security Recon Platform Configuration
+# =====================================
+
+general:
+  project_name: "security-recon-platform"
+  data_dir: "/opt/security-recon/data"
+  logs_dir: "/opt/security-recon/logs"
+  state_file: "/opt/security-recon/state/scan_state.json"
+  max_concurrent_scans: 3
+  default_threads: 10
+
+# Discord Webhook Configuration
+discord:
+  enabled: true
+  webhook_url: ""  # Set your Discord webhook URL here
+  notify_on:
+    - scan_start
+    - scan_complete
+    - new_subdomain
+    - new_vulnerability
+    - error
+  rate_limit_seconds: 5
+
+# Proxy Configuration
+proxy:
+  enabled: true
+  use_proxychains: true
+  proxychains_config: "/etc/proxychains4.conf"
+  rotate_proxies: true
+  proxy_list: "/opt/security-recon/config/proxies.txt"
+  timeout: 30
+  retry_on_fail: 3
+
+# Scan Modules Configuration
+modules:
+  subdomain_enumeration:
+    enabled: true
+    tools:
+      subfinder:
+        enabled: true
+        threads: 10
+        timeout: 300
+        rate_limit: 50
+      amass:
+        enabled: true
+        passive_only: true
+        timeout: 600
+      assetfinder:
+        enabled: true
+        subs_only: true
+      findomain:
+        enabled: true
+        threads: 8
+      chaos:
+        enabled: false
+        api_key: ""
+      crt_sh:
+        enabled: true
+      waybackurls:
+        enabled: true
+
+  dns_resolution:
+    enabled: true
+    tools:
+      dnsx:
+        enabled: true
+        threads: 50
+        resolvers: "/opt/security-recon/config/resolvers.txt"
+      massdns:
+        enabled: true
+        resolvers: "/opt/security-recon/config/resolvers.txt"
+        rate: 1000
+
+  port_scanning:
+    enabled: true
+    tools:
+      naabu:
+        enabled: true
+        rate: 1000
+        ports: "top-1000"
+        threads: 25
+      masscan:
+        enabled: true
+        rate: 1000
+        ports: "1-65535"
+      nmap:
+        enabled: false  # Slower, use for targeted scans
+        scripts: true
+
+  http_probing:
+    enabled: true
+    tools:
+      httpx:
+        enabled: true
+        threads: 50
+        timeout: 10
+        follow_redirects: true
+        status_codes: true
+        content_length: true
+        title: true
+        tech_detect: true
+      httprobe:
+        enabled: true
+        concurrency: 20
+
+  content_discovery:
+    enabled: true
+    tools:
+      ffuf:
+        enabled: true
+        threads: 40
+        timeout: 10
+        wordlist: "/opt/security-recon/wordlists/common.txt"
+        extensions: ".php,.asp,.aspx,.jsp,.html,.js,.json,.txt"
+      feroxbuster:
+        enabled: true
+        threads: 50
+        wordlist: "/opt/security-recon/wordlists/raft-medium-directories.txt"
+      dirsearch:
+        enabled: true
+        threads: 20
+
+  vulnerability_scanning:
+    enabled: true
+    tools:
+      nuclei:
+        enabled: true
+        templates: "/opt/security-recon/nuclei-templates"
+        severity: "critical,high,medium"
+        rate_limit: 150
+        bulk_size: 25
+        concurrency: 25
+      nikto:
+        enabled: false  # Noisy, use selectively
+        tuning: "123bde"
+
+  javascript_analysis:
+    enabled: true
+    tools:
+      linkfinder:
+        enabled: true
+      secretfinder:
+        enabled: true
+      getJS:
+        enabled: true
+
+  screenshot:
+    enabled: true
+    tools:
+      gowitness:
+        enabled: true
+        threads: 4
+        timeout: 10
+      eyewitness:
+        enabled: false
+
+  github_dorking:
+    enabled: false
+    tools:
+      gitdorker:
+        enabled: false
+        api_key: ""
+      trufflehog:
+        enabled: false
+
+  cloud_enum:
+    enabled: true
+    tools:
+      cloud_enum:
+        enabled: true
+        aws: true
+        azure: true
+        gcp: true
+      s3scanner:
+        enabled: true
+
+# Scheduling Configuration
+scheduler:
+  enabled: true
+  cron_schedule: "0 */6 * * *"  # Every 6 hours
+  resume_on_boot: true
+  max_runtime_hours: 12
+  pause_on_battery: true
+  battery_threshold: 20
+
+# Rate Limiting
+rate_limits:
+  global_requests_per_second: 100
+  per_domain_requests_per_second: 10
+  cooldown_between_domains: 30
+  backoff_on_429: true
+  backoff_multiplier: 2
+  max_backoff_seconds: 300
+
+# Filtering and Targeting
+filtering:
+  exclude_patterns:
+    - ".*\\.gov$"
+    - ".*\\.mil$"
+    - ".*\\.edu$"
+  include_only_in_scope: true
+  auto_detect_wildcards: true
+  remove_duplicates: true
+  resolve_cnames: true
+
+# Output Configuration
+output:
+  formats:
+    - json
+    - csv
+    - markdown
+  auto_report: true
+  report_template: "default"
+  compress_old_data: true
+  retention_days: 90
+
+# API Keys (for tools that need them)
+api_keys:
+  shodan: ""
+  censys_id: ""
+  censys_secret: ""
+  virustotal: ""
+  securitytrails: ""
+  chaos: ""
+  github: ""
+  hunter: ""
+  zoomeye: ""

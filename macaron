@@ -1,0 +1,1294 @@
+#!/usr/bin/env python3
+"""
+MACARON - Massive Automated Comprehensive Asset Reconnaissance & Offensive Nexus
+A unified security reconnaissance CLI tool
+"""
+import argparse
+import sys
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+import signal
+import re
+from pathlib import Path
+from datetime import datetime
+from typing import List, Dict, Any, Optional, Set
+from dataclasses import dataclass, field
+from enum import Enum
+from concurrent.futures import ThreadPoolExecutor
+import logging
+import threading
+import time
+
+# ============== CONFIGURATION ==============
+
+VERSION = "1.0.0"
+BANNER = """
+███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗
+████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔═══██╗████╗  ██║
+██╔████╔██║███████║██║     ███████║██████╔╝██║   ██║██╔██╗ ██║
+██║╚██╔╝██║██╔══██║██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║
+██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║
+╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
+        Massive Automated Comprehensive Asset Recon v{version}
+"""
+
+# Default directories
+HOME_DIR = Path.home() / ".macaron"
+DATA_DIR = HOME_DIR / "data"
+CONFIG_DIR = HOME_DIR / "config"
+STATE_DIR = HOME_DIR / "state"
+LOGS_DIR = HOME_DIR / "logs"
+WORDLISTS_DIR = HOME_DIR / "wordlists"
+
+# Default config
+DEFAULT_CONFIG = {
+    "discord": {
+        "enabled": False,
+        "webhook_url": "",
+        "notify_on": ["scan_complete", "vulnerability"]
+    },
+    "proxy": {
+        "enabled": True,
+        "use_proxychains": True
+    },
+    "rate_limits": {
+        "requests_per_second": 100,
+        "threads": 50
+    },
+    "scheduler": {
+        "cron": "0 */6 * * *",
+        "resume_on_boot": True
+    }
+}
+
+# ============== LOGGING ==============
+
+class ColoredFormatter(logging.Formatter):
+    COLORS = {
+        'DEBUG': '\033[36m',    # Cyan
+        'INFO': '\033[32m',     # Green
+        'WARNING': '\033[33m',  # Yellow
+        'ERROR': '\033[31m',    # Red
+        'CRITICAL': '\033[35m', # Magenta
+    }
+    RESET = '\033[0m'
+    
+    def format(self, record):
+        color = self.COLORS.get(record.levelname, self.RESET)
+        record.levelname = f"{color}{record.levelname}{self.RESET}"
+        return super().format(record)
+
+def setup_logging(verbose: bool = False, quiet: bool = False):
+    level = logging.DEBUG if verbose else (logging.WARNING if quiet else logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(ColoredFormatter('%(levelname)s %(message)s'))
+    logging.root.handlers = [handler]
+    logging.root.setLevel(level)
+
+logger = logging.getLogger("macaron")
+
+# ============== ENUMS & TYPES ==============
+
+class ScanMode(Enum):
+    WIDE = "wide"      # Infrastructure recon
+    NARROW = "narrow"  # Application-specific
+
+class ScanStatus(Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PAUSED = "paused"
+
+@dataclass
+class ScanContext:
+    """Context passed through scan pipeline"""
+    target: str
+    mode: ScanMode
+    output_dir: Path
+    use_proxy: bool = True
+    
+    # Discovered assets
+    subdomains: Set[str] = field(default_factory=set)
+    resolved: Dict[str, List[str]] = field(default_factory=dict)
+    live_hosts: Set[str] = field(default_factory=set)
+    ports: Dict[str, List[int]] = field(default_factory=dict)
+    urls: Set[str] = field(default_factory=set)
+    js_files: Set[str] = field(default_factory=set)
+    endpoints: Set[str] = field(default_factory=set)
+    technologies: Dict[str, List[str]] = field(default_factory=dict)
+    vulnerabilities: List[Dict] = field(default_factory=list)
+    
+    # Tracking
+    errors: List[str] = field(default_factory=list)
+    start_time: datetime = field(default_factory=datetime.now)
+
+# ============== UTILITIES ==============
+
+def ensure_dir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def is_installed(tool: str) -> bool:
+    return shutil.which(tool) is not None
+
+def run_cmd(cmd: List[str], timeout: int = 300, use_proxy: bool = False) -> tuple:
+    """Run command with optional proxychains"""
+    if use_proxy and is_installed("proxychains4"):
+        cmd = ["proxychains4", "-q"] + cmd
+    
+    try:
+        result = subprocess.run(
+            cmd, timeout=timeout, capture_output=True, text=True
+        )
+        return result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        return -1, "", "Timeout"
+    except Exception as e:
+        return -1, "", str(e)
+
+def save_list(filepath: Path, items):
+    with open(filepath, 'w') as f:
+        for item in sorted(set(items)):
+            f.write(f"{item}\n")
+
+def load_list(filepath: Path) -> List[str]:
+    if filepath.exists():
+        with open(filepath) as f:
+            return [l.strip() for l in f if l.strip()]
+    return []
+
+def sanitize_target(target: str) -> str:
+    return re.sub(r'[^\w\-.]', '_', 
+                  target.replace("https://", "").replace("http://", "").split("/")[0])
+
+def get_timestamp() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+def load_config() -> Dict:
+    config_file = CONFIG_DIR / "config.json"
+    if config_file.exists():
+        with open(config_file) as f:
+            return json.load(f)
+    return DEFAULT_CONFIG.copy()
+
+def save_config(config: Dict):
+    ensure_dir(CONFIG_DIR)
+    with open(CONFIG_DIR / "config.json", 'w') as f:
+        json.dump(config, f, indent=2)
+
+# ============== DISCORD NOTIFIER ==============
+
+class DiscordNotifier:
+    def __init__(self):
+        self.config = load_config().get("discord", {})
+        self.enabled = self.config.get("enabled", False)
+        self.webhook_url = self.config.get("webhook_url", "")
+    
+    def send(self, title: str, message: str, color: int = 0x3498db):
+        if not self.enabled or not self.webhook_url:
+            return
+        
+        try:
+            import urllib.request
+            payload = json.dumps({
+                "embeds": [{
+                    "title": title,
+                    "description": message[:4000],
+                    "color": color,
+                    "footer": {"text": "Macaron Recon"},
+                    "timestamp": get_timestamp()
+                }]
+            }).encode()
+            
+            req = urllib.request.Request(
+                self.webhook_url,
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            urllib.request.urlopen(req, timeout=10)
+        except:
+            pass
+    
+    def scan_start(self, targets: List[str], mode: str):
+        self.send("🚀 Scan Started", 
+                  f"**Mode:** {mode}\n**Targets:** {', '.join(targets[:5])}", 
+                  0x3498db)
+    
+    def scan_complete(self, stats: Dict):
+        self.send("✅ Scan Complete",
+                  f"**Subdomains:** {stats.get('subdomains', 0)}\n"
+                  f"**Live Hosts:** {stats.get('live_hosts', 0)}\n"
+                  f"**Vulnerabilities:** {stats.get('vulnerabilities', 0)}\n"
+                  f"**Duration:** {stats.get('duration', 'N/A')}",
+                  0x2ecc71)
+    
+    def vulnerability(self, name: str, severity: str, target: str):
+        colors = {"critical": 0xff0000, "high": 0xff6600, "medium": 0xffff00, "low": 0x00ff00}
+        self.send(f"⚠️ {severity.upper()}: {name}",
+                  f"**Target:** {target}",
+                  colors.get(severity.lower(), 0x7289da))
+
+# ============== SCAN ENGINE ==============
+
+class MacaronEngine:
+    """Main reconnaissance engine"""
+    
+    def __init__(self, use_proxy: bool = True, threads: int = 50):
+        self.use_proxy = use_proxy and is_installed("proxychains4")
+        self.threads = threads
+        self.running = False
+        self.notifier = DiscordNotifier()
+        self.state_file = STATE_DIR / "scan_state.json"
+        
+        # Ensure directories
+        for d in [DATA_DIR, CONFIG_DIR, STATE_DIR, LOGS_DIR, WORDLISTS_DIR]:
+            ensure_dir(d)
+        
+        signal.signal(signal.SIGINT, self._handle_interrupt)
+        signal.signal(signal.SIGTERM, self._handle_interrupt)
+    
+    def _handle_interrupt(self, signum, frame):
+        logger.warning("Interrupt received, saving state...")
+        self.running = False
+        self._save_state()
+    
+    def _save_state(self, state: Dict = None):
+        if state:
+            ensure_dir(STATE_DIR)
+            with open(self.state_file, 'w') as f:
+                json.dump(state, f, indent=2)
+    
+    def _load_state(self) -> Optional[Dict]:
+        if self.state_file.exists():
+            with open(self.state_file) as f:
+                return json.load(f)
+        return None
+    
+    def _cmd(self, cmd: List[str], timeout: int = 300) -> tuple:
+        return run_cmd(cmd, timeout, self.use_proxy)
+    
+    # ============== MAIN SCAN ==============
+    
+    def scan(self, targets: List[str], mode: ScanMode = ScanMode.WIDE, resume: bool = False) -> Dict:
+        """Run full reconnaissance scan"""
+        start_time = datetime.now()
+        self.running = True
+        
+        # Notify
+        self.notifier.scan_start(targets, mode.value)
+        
+        all_stats = {
+            "mode": mode.value,
+            "targets": len(targets),
+            "subdomains": 0,
+            "live_hosts": 0,
+            "ports": 0,
+            "urls": 0,
+            "vulnerabilities": 0,
+            "errors": 0
+        }
+        
+        logger.info(f"Starting {mode.value.upper()} scan on {len(targets)} target(s)")
+        if self.use_proxy:
+            logger.info("Proxychains: ENABLED")
+        
+        for i, target in enumerate(targets):
+            if not self.running:
+                break
+            
+            logger.info(f"\n{'='*60}")
+            logger.info(f"[{i+1}/{len(targets)}] {target}")
+            logger.info(f"{'='*60}")
+            
+            # Create output directory
+            output_dir = DATA_DIR / sanitize_target(target)
+            ensure_dir(output_dir)
+            
+            # Create context
+            ctx = ScanContext(
+                target=target,
+                mode=mode,
+                output_dir=output_dir,
+                use_proxy=self.use_proxy
+            )
+            
+            # Run pipeline
+            if mode == ScanMode.WIDE:
+                ctx = self._pipeline_wide(ctx)
+            else:
+                ctx = self._pipeline_narrow(ctx)
+            
+            # Update stats
+            all_stats["subdomains"] += len(ctx.subdomains)
+            all_stats["live_hosts"] += len(ctx.live_hosts)
+            all_stats["ports"] += sum(len(p) for p in ctx.ports.values())
+            all_stats["urls"] += len(ctx.urls)
+            all_stats["vulnerabilities"] += len(ctx.vulnerabilities)
+            all_stats["errors"] += len(ctx.errors)
+            
+            # Save results
+            self._save_results(ctx)
+        
+        # Duration
+        duration = datetime.now() - start_time
+        all_stats["duration"] = str(duration).split('.')[0]
+        all_stats["status"] = "completed" if self.running else "interrupted"
+        
+        # Notify
+        self.notifier.scan_complete(all_stats)
+        
+        return all_stats
+    
+    # ============== PIPELINES ==============
+    
+    def _pipeline_wide(self, ctx: ScanContext) -> ScanContext:
+        """Full infrastructure reconnaissance"""
+        
+        # Stage 1: Subdomain Discovery
+        ctx = self._stage_subdomains(ctx)
+        if not self.running: return ctx
+        
+        # Stage 2: DNS Resolution
+        ctx = self._stage_dns(ctx)
+        if not self.running: return ctx
+        
+        # Stage 3: Port Scanning
+        ctx = self._stage_ports(ctx)
+        if not self.running: return ctx
+        
+        # Stage 4: HTTP Probing
+        ctx = self._stage_http(ctx)
+        if not self.running: return ctx
+        
+        # Stage 5: URL Discovery
+        ctx = self._stage_urls(ctx)
+        if not self.running: return ctx
+        
+        # Stage 6: JS Analysis
+        ctx = self._stage_js(ctx)
+        if not self.running: return ctx
+        
+        # Stage 7: Screenshots
+        ctx = self._stage_screenshots(ctx)
+        if not self.running: return ctx
+        
+        # Stage 8: Vulnerability Scanning
+        ctx = self._stage_vulns(ctx)
+        
+        return ctx
+    
+    def _pipeline_narrow(self, ctx: ScanContext) -> ScanContext:
+        """Application-specific reconnaissance"""
+        
+        # Add target as subdomain
+        ctx.subdomains.add(ctx.target)
+        
+        # Stage 1: HTTP Probing
+        ctx = self._stage_http(ctx)
+        if not self.running: return ctx
+        
+        # Stage 2: Crawling
+        ctx = self._stage_crawl(ctx)
+        if not self.running: return ctx
+        
+        # Stage 3: URL Discovery
+        ctx = self._stage_urls(ctx)
+        if not self.running: return ctx
+        
+        # Stage 4: JS Analysis
+        ctx = self._stage_js(ctx)
+        if not self.running: return ctx
+        
+        # Stage 5: Content Discovery
+        ctx = self._stage_content(ctx)
+        if not self.running: return ctx
+        
+        # Stage 6: Screenshots
+        ctx = self._stage_screenshots(ctx)
+        if not self.running: return ctx
+        
+        # Stage 7: Vulnerability Scanning
+        ctx = self._stage_vulns(ctx, focused=True)
+        
+        return ctx
+    
+    # ============== STAGES ==============
+    
+    def _stage_subdomains(self, ctx: ScanContext) -> ScanContext:
+        """Subdomain enumeration"""
+        logger.info("\n[STAGE 1] Subdomain Discovery")
+        
+        all_subs = set()
+        
+        # Subfinder
+        if is_installed("subfinder"):
+            logger.info("  → subfinder")
+            code, out, _ = self._cmd(["subfinder", "-d", ctx.target, "-silent", "-all"], 600)
+            if code == 0:
+                subs = [l.strip() for l in out.split('\n') if l.strip()]
+                all_subs.update(subs)
+                logger.info(f"    Found {len(subs)}")
+        
+        # Amass
+        if is_installed("amass"):
+            logger.info("  → amass (passive)")
+            code, out, _ = self._cmd(["amass", "enum", "-passive", "-d", ctx.target], 900)
+            if code == 0:
+                subs = [l.strip() for l in out.split('\n') if l.strip()]
+                all_subs.update(subs)
+                logger.info(f"    Found {len(subs)}")
+        
+        # Assetfinder
+        if is_installed("assetfinder"):
+            logger.info("  → assetfinder")
+            code, out, _ = self._cmd(["assetfinder", "--subs-only", ctx.target], 300)
+            if code == 0:
+                subs = [l.strip() for l in out.split('\n') if l.strip() and ctx.target in l]
+                all_subs.update(subs)
+                logger.info(f"    Found {len(subs)}")
+        
+        # Findomain
+        if is_installed("findomain"):
+            logger.info("  → findomain")
+            code, out, _ = self._cmd(["findomain", "-t", ctx.target, "-q"], 300)
+            if code == 0:
+                subs = [l.strip() for l in out.split('\n') if l.strip()]
+                all_subs.update(subs)
+                logger.info(f"    Found {len(subs)}")
+        
+        # crt.sh
+        logger.info("  → crt.sh")
+        try:
+            import urllib.request
+            url = f"https://crt.sh/?q=%25.{ctx.target}&output=json"
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+                for entry in data:
+                    for name in entry.get("name_value", "").split('\n'):
+                        name = name.strip().lower()
+                        if name and '*' not in name:
+                            all_subs.add(name)
+            logger.info(f"    Found {len(all_subs)}")
+        except:
+            pass
+        
+        # Chaos
+        if is_installed("chaos"):
+            config = load_config()
+            api_key = config.get("api_keys", {}).get("chaos", os.environ.get("CHAOS_KEY", ""))
+            if api_key:
+                logger.info("  → chaos")
+                code, out, _ = self._cmd(["chaos", "-d", ctx.target, "-key", api_key, "-silent"], 300)
+                if code == 0:
+                    subs = [l.strip() for l in out.split('\n') if l.strip()]
+                    all_subs.update(subs)
+        
+        # Filter and dedupe
+        ctx.subdomains = {s.lower() for s in all_subs if ctx.target in s.lower()}
+        
+        logger.info(f"  ✓ Total unique: {len(ctx.subdomains)}")
+        save_list(ctx.output_dir / "subdomains.txt", ctx.subdomains)
+        
+        return ctx
+    
+    def _stage_dns(self, ctx: ScanContext) -> ScanContext:
+        """DNS resolution"""
+        if not ctx.subdomains:
+            return ctx
+        
+        logger.info("\n[STAGE 2] DNS Resolution")
+        
+        if is_installed("dnsx"):
+            logger.info("  → dnsx")
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write('\n'.join(ctx.subdomains))
+                temp_file = f.name
+            
+            try:
+                code, out, _ = self._cmd(
+                    ["dnsx", "-l", temp_file, "-a", "-resp", "-json", "-silent"], 600
+                )
+                if code == 0:
+                    for line in out.split('\n'):
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                host = data.get("host", "")
+                                ips = data.get("a", [])
+                                if host and ips:
+                                    ctx.resolved[host] = ips
+                            except:
+                                pass
+            finally:
+                Path(temp_file).unlink(missing_ok=True)
+        
+        logger.info(f"  ✓ Resolved: {len(ctx.resolved)}")
+        save_list(ctx.output_dir / "resolved.txt", 
+                  [f"{h}: {', '.join(ips)}" for h, ips in ctx.resolved.items()])
+        
+        return ctx
+    
+    def _stage_ports(self, ctx: ScanContext) -> ScanContext:
+        """Port scanning"""
+        hosts = list(ctx.resolved.keys()) if ctx.resolved else list(ctx.subdomains)[:100]
+        if not hosts:
+            return ctx
+        
+        logger.info("\n[STAGE 3] Port Scanning")
+        
+        if is_installed("naabu"):
+            logger.info(f"  → naabu ({len(hosts)} hosts)")
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write('\n'.join(hosts))
+                temp_file = f.name
+            
+            try:
+                code, out, _ = self._cmd(
+                    ["naabu", "-l", temp_file, "-json", "-silent", "-top-ports", "1000"], 1800
+                )
+                if code == 0:
+                    for line in out.split('\n'):
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                host = data.get("host", "")
+                                port = data.get("port", 0)
+                                if host and port:
+                                    if host not in ctx.ports:
+                                        ctx.ports[host] = []
+                                    ctx.ports[host].append(port)
+                            except:
+                                pass
+            finally:
+                Path(temp_file).unlink(missing_ok=True)
+        
+        total_ports = sum(len(p) for p in ctx.ports.values())
+        logger.info(f"  ✓ Open ports: {total_ports}")
+        save_list(ctx.output_dir / "ports.txt",
+                  [f"{h}:{p}" for h, ports in ctx.ports.items() for p in ports])
+        
+        return ctx
+    
+    def _stage_http(self, ctx: ScanContext) -> ScanContext:
+        """HTTP probing with tech detection"""
+        targets = set(ctx.subdomains)
+        for host, ports in ctx.ports.items():
+            for port in ports:
+                if port not in (80, 443):
+                    targets.add(f"{host}:{port}")
+        
+        if not targets:
+            return ctx
+        
+        logger.info("\n[STAGE 4] HTTP Probing")
+        
+        if is_installed("httpx"):
+            logger.info(f"  → httpx ({len(targets)} targets)")
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write('\n'.join(targets))
+                temp_file = f.name
+            
+            try:
+                code, out, _ = self._cmd([
+                    "httpx", "-l", temp_file, "-json", "-silent",
+                    "-status-code", "-title", "-tech-detect", "-follow-redirects"
+                ], 1800)
+                
+                if code == 0:
+                    for line in out.split('\n'):
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                url = data.get("url", "")
+                                if url:
+                                    ctx.live_hosts.add(url)
+                                    if data.get("tech"):
+                                        ctx.technologies[url] = data["tech"]
+                            except:
+                                pass
+            finally:
+                Path(temp_file).unlink(missing_ok=True)
+        
+        logger.info(f"  ✓ Live hosts: {len(ctx.live_hosts)}")
+        save_list(ctx.output_dir / "live_hosts.txt", ctx.live_hosts)
+        save_list(ctx.output_dir / "technologies.txt",
+                  [f"{h}: {', '.join(t)}" for h, t in ctx.technologies.items()])
+        
+        return ctx
+    
+    def _stage_urls(self, ctx: ScanContext) -> ScanContext:
+        """URL discovery from archives"""
+        targets = list(ctx.live_hosts)[:20] if ctx.live_hosts else [ctx.target]
+        
+        logger.info("\n[STAGE 5] URL Discovery")
+        
+        all_urls = set()
+        
+        # GAU
+        if is_installed("gau"):
+            logger.info("  → gau")
+            for target in targets[:5]:
+                code, out, _ = self._cmd(["gau", "--subs", target], 300)
+                if code == 0:
+                    urls = [l.strip() for l in out.split('\n') if l.strip()]
+                    all_urls.update(urls)
+            logger.info(f"    Found {len(all_urls)}")
+        
+        # Waybackurls
+        if is_installed("waybackurls"):
+            logger.info("  → waybackurls")
+            code, out, _ = self._cmd(["waybackurls", ctx.target], 300)
+            if code == 0:
+                urls = [l.strip() for l in out.split('\n') if l.strip()]
+                all_urls.update(urls)
+                logger.info(f"    Found {len(urls)}")
+        
+        # Katana
+        if is_installed("katana") and ctx.live_hosts:
+            logger.info("  → katana")
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write('\n'.join(list(ctx.live_hosts)[:10]))
+                temp_file = f.name
+            
+            try:
+                code, out, _ = self._cmd(
+                    ["katana", "-list", temp_file, "-silent", "-d", "2", "-jc"], 900
+                )
+                if code == 0:
+                    urls = [l.strip() for l in out.split('\n') if l.strip()]
+                    all_urls.update(urls)
+                    logger.info(f"    Found {len(urls)}")
+            finally:
+                Path(temp_file).unlink(missing_ok=True)
+        
+        # Waymore
+        if is_installed("waymore"):
+            logger.info("  → waymore")
+            code, out, _ = self._cmd(["waymore", "-i", ctx.target, "-mode", "U"], 600)
+            if code == 0:
+                urls = [l.strip() for l in out.split('\n') if l.strip()]
+                all_urls.update(urls)
+        
+        ctx.urls = all_urls
+        ctx.js_files = {u for u in all_urls if '.js' in u and '?' not in u.split('.js')[1] if '.js' in u else '.js' in u}
+        
+        logger.info(f"  ✓ Total URLs: {len(ctx.urls)}, JS files: {len(ctx.js_files)}")
+        save_list(ctx.output_dir / "urls.txt", ctx.urls)
+        save_list(ctx.output_dir / "js_files.txt", ctx.js_files)
+        
+        return ctx
+    
+    def _stage_crawl(self, ctx: ScanContext) -> ScanContext:
+        """Deep crawling for narrow mode"""
+        if not ctx.live_hosts:
+            return ctx
+        
+        logger.info("\n[STAGE] Deep Crawling")
+        
+        all_urls = set(ctx.urls)
+        
+        # Katana deep
+        if is_installed("katana"):
+            logger.info("  → katana (depth=3)")
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write('\n'.join(ctx.live_hosts))
+                temp_file = f.name
+            
+            try:
+                code, out, _ = self._cmd(
+                    ["katana", "-list", temp_file, "-silent", "-d", "3", "-jc"], 1200
+                )
+                if code == 0:
+                    urls = [l.strip() for l in out.split('\n') if l.strip()]
+                    all_urls.update(urls)
+            finally:
+                Path(temp_file).unlink(missing_ok=True)
+        
+        # Hakrawler
+        if is_installed("hakrawler"):
+            logger.info("  → hakrawler")
+            for target in list(ctx.live_hosts)[:3]:
+                code, out, _ = self._cmd(["hakrawler", "-url", target, "-plain"], 300)
+                if code == 0:
+                    urls = [l.strip() for l in out.split('\n') if l.strip()]
+                    all_urls.update(urls)
+        
+        ctx.urls = all_urls
+        ctx.js_files = {u for u in all_urls if '.js' in u}
+        
+        logger.info(f"  ✓ Total URLs: {len(ctx.urls)}")
+        save_list(ctx.output_dir / "urls.txt", ctx.urls)
+        
+        return ctx
+    
+    def _stage_js(self, ctx: ScanContext) -> ScanContext:
+        """JavaScript analysis"""
+        if not ctx.js_files and not ctx.live_hosts:
+            return ctx
+        
+        logger.info("\n[STAGE 6] JS Analysis")
+        
+        # GetJS
+        if is_installed("getJS") and ctx.live_hosts:
+            logger.info("  → getJS")
+            for host in list(ctx.live_hosts)[:10]:
+                code, out, _ = self._cmd(["getJS", "--url", host, "--complete"], 120)
+                if code == 0:
+                    js = [l.strip() for l in out.split('\n') if l.strip() and '.js' in l]
+                    ctx.js_files.update(js)
+        
+        # LinkFinder
+        if is_installed("linkfinder") and ctx.js_files:
+            logger.info("  → linkfinder")
+            for js_url in list(ctx.js_files)[:20]:
+                code, out, _ = self._cmd(["linkfinder", "-i", js_url, "-o", "cli"], 60)
+                if code == 0:
+                    endpoints = [l.strip() for l in out.split('\n') if l.strip()]
+                    ctx.endpoints.update(endpoints)
+        
+        logger.info(f"  ✓ JS files: {len(ctx.js_files)}, Endpoints: {len(ctx.endpoints)}")
+        save_list(ctx.output_dir / "js_files.txt", ctx.js_files)
+        save_list(ctx.output_dir / "endpoints.txt", ctx.endpoints)
+        
+        return ctx
+    
+    def _stage_content(self, ctx: ScanContext) -> ScanContext:
+        """Content discovery for narrow mode"""
+        if not ctx.live_hosts:
+            return ctx
+        
+        logger.info("\n[STAGE] Content Discovery")
+        
+        wordlist = WORDLISTS_DIR / "common.txt"
+        if not wordlist.exists():
+            logger.warning("  Wordlist not found, skipping")
+            return ctx
+        
+        if is_installed("ffuf"):
+            ensure_dir(ctx.output_dir / "content")
+            
+            for target in list(ctx.live_hosts)[:3]:
+                logger.info(f"  → ffuf: {target}")
+                output_file = ctx.output_dir / "content" / f"{sanitize_target(target)}.json"
+                
+                self._cmd([
+                    "ffuf", "-u", f"{target}/FUZZ", "-w", str(wordlist),
+                    "-o", str(output_file), "-of", "json",
+                    "-mc", "200,201,204,301,302,307,401,403,405",
+                    "-t", "50", "-s"
+                ], 600)
+        
+        return ctx
+    
+    def _stage_screenshots(self, ctx: ScanContext) -> ScanContext:
+        """Take screenshots"""
+        if not ctx.live_hosts:
+            return ctx
+        
+        logger.info("\n[STAGE 7] Screenshots")
+        
+        ss_dir = ctx.output_dir / "screenshots"
+        ensure_dir(ss_dir)
+        
+        if is_installed("gowitness"):
+            logger.info(f"  → gowitness ({len(ctx.live_hosts)} hosts)")
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write('\n'.join(ctx.live_hosts))
+                temp_file = f.name
+            
+            try:
+                self._cmd([
+                    "gowitness", "file", "-f", temp_file, 
+                    "-P", str(ss_dir), "--timeout", "10"
+                ], 3600)
+            finally:
+                Path(temp_file).unlink(missing_ok=True)
+        
+        elif is_installed("eyewitness"):
+            logger.info(f"  → eyewitness ({len(ctx.live_hosts)} hosts)")
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write('\n'.join(ctx.live_hosts))
+                temp_file = f.name
+            
+            try:
+                self._cmd([
+                    "eyewitness", "-f", temp_file, 
+                    "-d", str(ss_dir), "--no-prompt"
+                ], 3600)
+            finally:
+                Path(temp_file).unlink(missing_ok=True)
+        
+        logger.info("  ✓ Screenshots saved")
+        return ctx
+    
+    def _stage_vulns(self, ctx: ScanContext, focused: bool = False) -> ScanContext:
+        """Vulnerability scanning with nuclei"""
+        targets = list(ctx.live_hosts) if ctx.live_hosts else list(ctx.subdomains)[:50]
+        if not targets:
+            return ctx
+        
+        logger.info("\n[STAGE 8] Vulnerability Scanning")
+        
+        if is_installed("nuclei"):
+            logger.info(f"  → nuclei ({len(targets)} targets)")
+            
+            vuln_dir = ctx.output_dir / "vulnerabilities"
+            ensure_dir(vuln_dir)
+            output_file = vuln_dir / "nuclei.json"
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write('\n'.join(targets))
+                temp_file = f.name
+            
+            try:
+                cmd = [
+                    "nuclei", "-l", temp_file, 
+                    "-o", str(output_file), "-json", "-silent",
+                    "-rate-limit", "100", "-c", "25"
+                ]
+                
+                if focused:
+                    cmd.extend(["-severity", "critical,high,medium"])
+                else:
+                    cmd.extend(["-severity", "critical,high,medium,low"])
+                
+                self._cmd(cmd, 7200)
+                
+                # Parse results
+                if output_file.exists():
+                    with open(output_file) as f:
+                        for line in f:
+                            if line.strip():
+                                try:
+                                    data = json.loads(line)
+                                    vuln = {
+                                        "host": data.get("host", ""),
+                                        "name": data.get("info", {}).get("name", ""),
+                                        "severity": data.get("info", {}).get("severity", "info"),
+                                        "template": data.get("template-id", ""),
+                                    }
+                                    ctx.vulnerabilities.append(vuln)
+                                    
+                                    # Notify critical/high
+                                    if vuln["severity"] in ("critical", "high"):
+                                        self.notifier.vulnerability(
+                                            vuln["name"], vuln["severity"], vuln["host"]
+                                        )
+                                except:
+                                    pass
+            finally:
+                Path(temp_file).unlink(missing_ok=True)
+        
+        logger.info(f"  ✓ Vulnerabilities: {len(ctx.vulnerabilities)}")
+        
+        return ctx
+    
+    def _save_results(self, ctx: ScanContext):
+        """Save final results"""
+        summary = {
+            "target": ctx.target,
+            "mode": ctx.mode.value,
+            "scanned_at": get_timestamp(),
+            "duration": str(datetime.now() - ctx.start_time).split('.')[0],
+            "stats": {
+                "subdomains": len(ctx.subdomains),
+                "resolved": len(ctx.resolved),
+                "live_hosts": len(ctx.live_hosts),
+                "ports": sum(len(p) for p in ctx.ports.values()),
+                "urls": len(ctx.urls),
+                "js_files": len(ctx.js_files),
+                "endpoints": len(ctx.endpoints),
+                "vulnerabilities": len(ctx.vulnerabilities)
+            },
+            "vulnerabilities": ctx.vulnerabilities,
+            "errors": ctx.errors
+        }
+        
+        with open(ctx.output_dir / "summary.json", 'w') as f:
+            json.dump(summary, f, indent=2)
+
+# ============== CLI COMMANDS ==============
+
+def cmd_scan(args):
+    """Run a scan"""
+    targets = []
+    
+    if args.target:
+        targets = args.target
+    elif args.file:
+        targets = load_list(Path(args.file))
+    elif args.stdin:
+        targets = [l.strip() for l in sys.stdin if l.strip()]
+    
+    if not targets:
+        logger.error("No targets provided")
+        return 1
+    
+    mode = ScanMode.NARROW if args.mode == "narrow" else ScanMode.WIDE
+    use_proxy = not args.no_proxy
+    
+    engine = MacaronEngine(use_proxy=use_proxy, threads=args.threads)
+    stats = engine.scan(targets, mode=mode, resume=args.resume)
+    
+    # Print summary
+    print("\n" + "="*60)
+    print("SCAN COMPLETE")
+    print("="*60)
+    print(f"Mode:            {stats['mode']}")
+    print(f"Duration:        {stats['duration']}")
+    print(f"Subdomains:      {stats['subdomains']}")
+    print(f"Live Hosts:      {stats['live_hosts']}")
+    print(f"Open Ports:      {stats['ports']}")
+    print(f"URLs:            {stats['urls']}")
+    print(f"Vulnerabilities: {stats['vulnerabilities']}")
+    print(f"\nResults saved to: {DATA_DIR}")
+    
+    return 0
+
+def cmd_install(args):
+    """Install reconnaissance tools"""
+    print("Installing reconnaissance tools...")
+    print("This requires sudo and may take a while.\n")
+    
+    # Check for sudo
+    if os.geteuid() != 0:
+        print("Please run with sudo: sudo macaron install")
+        return 1
+    
+    # Install Go
+    subprocess.run(["apt-get", "update", "-qq"], check=False)
+    subprocess.run(["apt-get", "install", "-y", "-qq", 
+                   "golang-go", "python3-pip", "git", "curl", "wget", 
+                   "unzip", "proxychains4", "jq"], check=False)
+    
+    # Go tools
+    go_tools = [
+        "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
+        "github.com/projectdiscovery/httpx/cmd/httpx@latest",
+        "github.com/projectdiscovery/dnsx/cmd/dnsx@latest",
+        "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
+        "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
+        "github.com/projectdiscovery/katana/cmd/katana@latest",
+        "github.com/projectdiscovery/chaos-client/cmd/chaos@latest",
+        "github.com/tomnomnom/assetfinder@latest",
+        "github.com/tomnomnom/waybackurls@latest",
+        "github.com/sensepost/gowitness@latest",
+        "github.com/ffuf/ffuf/v2@latest",
+        "github.com/hakluke/hakrawler@latest",
+        "github.com/lc/gau/v2/cmd/gau@latest",
+        "github.com/003random/getJS@latest",
+    ]
+    
+    os.environ["GOPATH"] = str(Path.home() / "go")
+    os.environ["PATH"] = os.environ["PATH"] + ":" + str(Path.home() / "go" / "bin")
+    
+    for tool in go_tools:
+        print(f"  Installing {tool.split('/')[-1].split('@')[0]}...")
+        subprocess.run(["go", "install", tool], capture_output=True)
+    
+    # Copy to /usr/local/bin
+    go_bin = Path.home() / "go" / "bin"
+    if go_bin.exists():
+        for f in go_bin.iterdir():
+            shutil.copy(str(f), "/usr/local/bin/")
+    
+    # Python tools
+    print("  Installing Python tools...")
+    subprocess.run(["pip3", "install", "-q", "waymore", "linkfinder"], capture_output=True)
+    
+    # Findomain
+    if not is_installed("findomain"):
+        print("  Installing findomain...")
+        subprocess.run([
+            "bash", "-c",
+            "curl -sLO https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux.zip && "
+            "unzip -q -o findomain-linux.zip && chmod +x findomain && mv findomain /usr/local/bin/ && rm findomain-linux.zip"
+        ], capture_output=True)
+    
+    # Amass
+    if not is_installed("amass"):
+        print("  Installing amass...")
+        subprocess.run(["apt-get", "install", "-y", "-qq", "amass"], capture_output=True)
+    
+    # Nuclei templates
+    print("  Updating nuclei templates...")
+    subprocess.run(["nuclei", "-update-templates"], capture_output=True)
+    
+    # Download wordlists
+    print("  Downloading wordlists...")
+    ensure_dir(WORDLISTS_DIR)
+    if not (WORDLISTS_DIR / "common.txt").exists():
+        subprocess.run([
+            "curl", "-sL", 
+            "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt",
+            "-o", str(WORDLISTS_DIR / "common.txt")
+        ])
+    
+    print("\n✓ Installation complete!")
+    print("\nInstalled tools:")
+    
+    tools = ["subfinder", "amass", "assetfinder", "findomain", "httpx", "dnsx", 
+             "naabu", "nuclei", "katana", "gau", "waybackurls", "ffuf", "gowitness",
+             "hakrawler", "getJS", "waymore", "linkfinder"]
+    
+    for tool in tools:
+        status = "✓" if is_installed(tool) else "✗"
+        print(f"  [{status}] {tool}")
+    
+    return 0
+
+def cmd_config(args):
+    """Configuration management"""
+    config = load_config()
+    
+    if args.action == "show":
+        print(json.dumps(config, indent=2))
+    
+    elif args.action == "set":
+        if not args.key or args.value is None:
+            print("Usage: macaron config set --key KEY --value VALUE")
+            return 1
+        
+        keys = args.key.split(".")
+        current = config
+        for k in keys[:-1]:
+            if k not in current:
+                current[k] = {}
+            current = current[k]
+        
+        try:
+            current[keys[-1]] = json.loads(args.value)
+        except:
+            current[keys[-1]] = args.value
+        
+        save_config(config)
+        print(f"Set {args.key} = {args.value}")
+    
+    elif args.action == "webhook":
+        if not args.url:
+            print("Usage: macaron config webhook --url URL")
+            return 1
+        
+        config["discord"]["webhook_url"] = args.url
+        config["discord"]["enabled"] = True
+        save_config(config)
+        print("Discord webhook configured")
+        
+        if args.test:
+            notifier = DiscordNotifier()
+            notifier.config = config["discord"]
+            notifier.enabled = True
+            notifier.webhook_url = args.url
+            notifier.send("🔧 Test", "Macaron is configured!", 0x3498db)
+            print("Test notification sent!")
+    
+    return 0
+
+def cmd_list(args):
+    """List targets, tools, or results"""
+    if args.what == "tools":
+        tools = [
+            "subfinder", "amass", "assetfinder", "findomain", "chaos",
+            "httpx", "httprobe", "dnsx", "massdns",
+            "naabu", "masscan", "nmap",
+            "gau", "waymore", "waybackurls", "katana", "hakrawler",
+            "getJS", "linkfinder", "secretfinder",
+            "ffuf", "feroxbuster", "dirsearch",
+            "nuclei", "nikto",
+            "gowitness", "eyewitness"
+        ]
+        
+        print("Installed Tools:")
+        for tool in tools:
+            status = "✓" if is_installed(tool) else "✗"
+            color = "\033[32m" if is_installed(tool) else "\033[31m"
+            print(f"  {color}[{status}]\033[0m {tool}")
+    
+    elif args.what == "results":
+        if not DATA_DIR.exists():
+            print("No results yet")
+            return 0
+        
+        print("Scan Results:")
+        for target_dir in sorted(DATA_DIR.iterdir()):
+            if target_dir.is_dir():
+                summary_file = target_dir / "summary.json"
+                if summary_file.exists():
+                    with open(summary_file) as f:
+                        summary = json.load(f)
+                    stats = summary.get("stats", {})
+                    print(f"\n  {target_dir.name}:")
+                    print(f"    Subdomains: {stats.get('subdomains', 0)}")
+                    print(f"    Live hosts: {stats.get('live_hosts', 0)}")
+                    print(f"    URLs:       {stats.get('urls', 0)}")
+                    print(f"    Vulns:      {stats.get('vulnerabilities', 0)}")
+    
+    elif args.what == "targets":
+        targets_file = CONFIG_DIR / "targets.txt"
+        if targets_file.exists():
+            targets = load_list(targets_file)
+            print(f"Saved Targets ({len(targets)}):")
+            for t in targets:
+                print(f"  - {t}")
+        else:
+            print("No saved targets")
+    
+    return 0
+
+def cmd_export(args):
+    """Export results"""
+    if not DATA_DIR.exists():
+        print("No data to export")
+        return 1
+    
+    output_file = Path(args.output) if args.output else Path(f"macaron_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    
+    data = {"exported_at": get_timestamp(), "targets": {}}
+    
+    for target_dir in DATA_DIR.iterdir():
+        if target_dir.is_dir():
+            if args.domain and target_dir.name != sanitize_target(args.domain):
+                continue
+            
+            target_data = {"name": target_dir.name}
+            
+            for file in ["subdomains.txt", "live_hosts.txt", "urls.txt", "ports.txt"]:
+                filepath = target_dir / file
+                if filepath.exists():
+                    target_data[file.replace(".txt", "")] = load_list(filepath)
+            
+            summary_file = target_dir / "summary.json"
+            if summary_file.exists():
+                with open(summary_file) as f:
+                    target_data["summary"] = json.load(f)
+            
+            data["targets"][target_dir.name] = target_data
+    
+    with open(output_file, 'w') as f:
+        json.dump(data, f, indent=2)
+    
+    print(f"Exported to {output_file}")
+    return 0
+
+def cmd_add(args):
+    """Add targets to saved list"""
+    targets_file = CONFIG_DIR / "targets.txt"
+    ensure_dir(CONFIG_DIR)
+    
+    existing = set(load_list(targets_file)) if targets_file.exists() else set()
+    
+    new_targets = []
+    for t in args.targets:
+        t = t.strip().lower()
+        if t.startswith("http"):
+            t = t.replace("https://", "").replace("http://", "").split("/")[0]
+        if t and t not in existing:
+            new_targets.append(t)
+            existing.add(t)
+    
+    if new_targets:
+        with open(targets_file, 'a') as f:
+            for t in new_targets:
+                f.write(f"{t}\n")
+        print(f"Added {len(new_targets)} target(s): {', '.join(new_targets)}")
+    else:
+        print("No new targets to add")
+    
+    return 0
+
+# ============== MAIN ==============
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="macaron",
+        description="MACARON - Massive Automated Comprehensive Asset Reconnaissance",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  macaron scan -t example.com              # Wide infrastructure scan
+  macaron scan -t app.example.com -m narrow   # Narrow application scan
+  macaron scan -f targets.txt              # Scan from file
+  macaron scan -t target.com --no-proxy    # Without proxychains
+  macaron list tools                       # Show installed tools
+  macaron config webhook --url URL         # Set Discord webhook
+  macaron export -o results.json           # Export all data
+        """
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Quiet mode")
+    parser.add_argument("--version", action="version", version=f"macaron {VERSION}")
+    
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    
+    # Scan
+    scan_p = subparsers.add_parser("scan", help="Run reconnaissance scan")
+    scan_p.add_argument("-t", "--target", nargs="+", help="Target domain(s)")
+    scan_p.add_argument("-f", "--file", help="File with targets")
+    scan_p.add_argument("--stdin", action="store_true", help="Read from stdin")
+    scan_p.add_argument("-m", "--mode", choices=["wide", "narrow"], default="wide",
+                        help="Scan mode: wide (infrastructure) or narrow (application)")
+    scan_p.add_argument("--no-proxy", action="store_true", help="Disable proxychains")
+    scan_p.add_argument("--threads", type=int, default=50, help="Number of threads")
+    scan_p.add_argument("-r", "--resume", action="store_true", help="Resume previous scan")
+    
+    # Install
+    subparsers.add_parser("install", help="Install recon tools (requires sudo)")
+    
+    # Config
+    config_p = subparsers.add_parser("config", help="Configuration")
+    config_p.add_argument("action", choices=["show", "set", "webhook"], nargs="?", default="show")
+    config_p.add_argument("--key", help="Config key")
+    config_p.add_argument("--value", help="Config value")
+    config_p.add_argument("--url", help="Webhook URL")
+    config_p.add_argument("--test", action="store_true", help="Test webhook")
+    
+    # List
+    list_p = subparsers.add_parser("list", help="List tools, results, or targets")
+    list_p.add_argument("what", choices=["tools", "results", "targets"], default="tools", nargs="?")
+    
+    # Export
+    export_p = subparsers.add_parser("export", help="Export results")
+    export_p.add_argument("-o", "--output", help="Output file")
+    export_p.add_argument("-d", "--domain", help="Specific domain")
+    
+    # Add
+    add_p = subparsers.add_parser("add", help="Add targets to saved list")
+    add_p.add_argument("targets", nargs="+", help="Targets to add")
+    
+    args = parser.parse_args()
+    
+    # Setup logging
+    setup_logging(args.verbose, args.quiet)
+    
+    # Show banner
+    if not args.quiet and args.command:
+        print(BANNER.format(version=VERSION))
+    
+    # Run command
+    if not args.command:
+        parser.print_help()
+        return 0
+    
+    commands = {
+        "scan": cmd_scan,
+        "install": cmd_install,
+        "config": cmd_config,
+        "list": cmd_list,
+        "export": cmd_export,
+        "add": cmd_add,
+    }
+    
+    return commands.get(args.command, lambda _: parser.print_help())(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
