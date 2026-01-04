@@ -1,4 +1,4 @@
-# Security Recon Platform 🔍
+# Macaron 🍪
 
 A single unified CLI tool for automated security reconnaissance. Chains all recon tools efficiently, filters targets for manual testing, and sends Discord notifications.
 

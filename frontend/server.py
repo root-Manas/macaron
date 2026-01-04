@@ -542,12 +542,16 @@ async def export_data(domain: Optional[str] = None, format: str = "json"):
 
 # Serve frontend
 frontend_dir = Path(__file__).parent / "static"
+
+@app.get("/dashboard")
+async def dashboard():
+    html_file = frontend_dir / "index.html"
+    if html_file.exists():
+        return FileResponse(html_file)
+    return JSONResponse({"error": "Dashboard not found"}, status_code=404)
+
 if frontend_dir.exists():
     app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
-    
-    @app.get("/dashboard")
-    async def dashboard():
-        return FileResponse(frontend_dir / "index.html")
 
 
 if __name__ == "__main__":
