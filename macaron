@@ -237,9 +237,10 @@ class DiscordNotifier:
 class MacaronEngine:
     """Main reconnaissance engine"""
     
-    def __init__(self, use_proxy: bool = True, threads: int = 50):
+    def __init__(self, use_proxy: bool = True, threads: int = 50, rate_limit: int = 100):
         self.use_proxy = use_proxy and is_installed("proxychains4")
         self.threads = threads
+        self.rate_limit = rate_limit
         self.running = False
         self.notifier = DiscordNotifier()
         self.state_file = STATE_DIR / "scan_state.json"
@@ -549,9 +550,11 @@ class MacaronEngine:
                 temp_file = f.name
             
             try:
-                code, out, _ = self._cmd(
-                    ["naabu", "-l", temp_file, "-json", "-silent", "-top-ports", "1000"], 1800
-                )
+                cmd = [
+                    "naabu", "-l", temp_file, "-json", "-silent", "-top-ports", "1000",
+                    "-rate", str(self.rate_limit), "-c", str(min(self.threads, 25))
+                ]
+                code, out, _ = self._cmd(cmd, 1800)
                 if code == 0:
                     for line in out.split('\n'):
                         if line.strip():
@@ -598,7 +601,8 @@ class MacaronEngine:
             try:
                 code, out, _ = self._cmd([
                     "httpx", "-l", temp_file, "-json", "-silent",
-                    "-status-code", "-title", "-tech-detect", "-follow-redirects"
+                    "-status-code", "-title", "-tech-detect", "-follow-redirects",
+                    "-rate-limit", str(self.rate_limit), "-threads", str(min(self.threads, 25))
                 ], 1800)
                 
                 if code == 0:
@@ -659,7 +663,8 @@ class MacaronEngine:
             
             try:
                 code, out, _ = self._cmd(
-                    ["katana", "-list", temp_file, "-silent", "-d", "2", "-jc"], 900
+                    ["katana", "-list", temp_file, "-silent", "-d", "2", "-jc",
+                     "-rate-limit", str(self.rate_limit), "-concurrency", str(min(self.threads, 10))], 900
                 )
                 if code == 0:
                     urls = [l.strip() for l in out.split('\n') if l.strip()]
@@ -853,7 +858,7 @@ class MacaronEngine:
                 cmd = [
                     "nuclei", "-l", temp_file, 
                     "-o", str(output_file), "-json", "-silent",
-                    "-rate-limit", "100", "-c", "25"
+                    "-rate-limit", str(self.rate_limit), "-c", str(min(self.threads, 25))
                 ]
                 
                 if focused:
@@ -936,7 +941,15 @@ def cmd_scan(args):
     mode = ScanMode.NARROW if args.mode == "narrow" else ScanMode.WIDE
     use_proxy = not args.no_proxy
     
-    engine = MacaronEngine(use_proxy=use_proxy, threads=args.threads)
+    # Determine rate limit
+    rate_limit = args.rate_limit
+    threads = args.threads
+    if args.slow:
+        rate_limit = 10
+        threads = 5
+        logger.info("Slow mode enabled: rate=10 req/s, threads=5")
+    
+    engine = MacaronEngine(use_proxy=use_proxy, threads=threads, rate_limit=rate_limit)
     stats = engine.scan(targets, mode=mode, resume=args.resume)
     
     # Print summary
@@ -1534,6 +1547,8 @@ Examples:
     scan_p.add_argument("--no-proxy", action="store_true", help="Disable proxychains")
     scan_p.add_argument("--threads", type=int, default=50, help="Number of threads")
     scan_p.add_argument("-r", "--resume", action="store_true", help="Resume previous scan")
+    scan_p.add_argument("--slow", action="store_true", help="Slow mode for limited bandwidth (rate limit to 10 req/s)")
+    scan_p.add_argument("--rate-limit", type=int, default=100, help="Requests per second (default: 100)")
     
     # Install
     subparsers.add_parser("install", help="Install recon tools (requires sudo)")

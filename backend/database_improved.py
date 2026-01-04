@@ -264,3 +264,9 @@ class Notification(Base):
     sent_at = Column(DateTime, default=datetime.utcnow, index=True)  # Added index for time-based queries
     discord_sent = Column(Boolean, default=False, index=True)  # Added index for filtering
     metadata = Column(JSON, default={})
+    
+    __table_args__ = (
+        Index('idx_notification_level_sent', 'level', 'sent_at'),
+        # Partial index for unsent notifications (best practice from web research)
+        Index('idx_notification_unsent', 'discord_sent', postgresql_where=(discord_sent == False)),
+    )

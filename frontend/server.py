@@ -432,6 +432,24 @@ async def get_stats():
     return stats
 
 
+@app.get("/api/dashboard")
+async def get_dashboard():
+    """Consolidated dashboard data - single API call for all dashboard needs"""
+    status = await get_status()
+    stats = await get_stats()
+    targets = await get_targets()
+    tools = await get_tools()
+    results = await get_results()
+    
+    return {
+        "status": status,
+        "stats": stats,
+        "targets": targets.get("targets", []),
+        "tools": tools,
+        "results": results.get("results", {})
+    }
+
+
 @app.get("/api/config")
 async def get_config():
     """Get current configuration"""
