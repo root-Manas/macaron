@@ -135,20 +135,25 @@ def ensure_dir(path: Path) -> Path:
 def is_installed(tool: str) -> bool:
     return shutil.which(tool) is not None
 
-def run_cmd(cmd: List[str], timeout: int = 300, use_proxy: bool = False) -> tuple:
-    """Run command with optional proxychains"""
+def run_cmd(cmd: List[str], timeout: int = 300, use_proxy: bool = False, stdin_input: str = None) -> tuple:
+    """Run command with optional proxychains and stdin support"""
     if use_proxy and is_installed("proxychains4"):
         cmd = ["proxychains4", "-q"] + cmd
     
     try:
         result = subprocess.run(
-            cmd, timeout=timeout, capture_output=True, text=True
+            cmd, timeout=timeout, capture_output=True, text=True,
+            input=stdin_input
         )
         return result.returncode, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
         return -1, "", "Timeout"
     except Exception as e:
         return -1, "", str(e)
+
+def strip_protocol(url: str) -> str:
+    """Strip protocol and path from URL, return clean domain"""
+    return url.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
 
 def save_list(filepath: Path, items):
     with open(filepath, 'w') as f:
@@ -269,8 +274,19 @@ class MacaronEngine:
                 return json.load(f)
         return None
     
-    def _cmd(self, cmd: List[str], timeout: int = 300) -> tuple:
-        return run_cmd(cmd, timeout, self.use_proxy)
+    def _cmd(self, cmd: List[str], timeout: int = 300, stdin_input: str = None) -> tuple:
+        """Run command with error logging"""
+        code, stdout, stderr = run_cmd(cmd, timeout, self.use_proxy, stdin_input)
+        
+        # Log errors for debugging
+        if code != 0 and code != -1:
+            tool_name = cmd[0] if cmd else "unknown"
+            if "proxychains4" in tool_name and len(cmd) > 2:
+                tool_name = cmd[2]
+            error_msg = stderr[:200] if stderr else "No output"
+            logger.debug(f"Tool {tool_name} exited with code {code}: {error_msg}")
+        
+        return code, stdout, stderr
     
     # ============== MAIN SCAN ==============
     
@@ -388,31 +404,39 @@ class MacaronEngine:
         # Add target as subdomain
         ctx.subdomains.add(ctx.target)
         
-        # Stage 1: HTTP Probing
+        # Stage 1: DNS Resolution (validate target is resolvable)
+        ctx = self._stage_dns(ctx)
+        if not self.running: return ctx
+        
+        # Stage 2: Lightweight Port Scanning (common web ports only)
+        ctx = self._stage_ports_light(ctx)
+        if not self.running: return ctx
+        
+        # Stage 3: HTTP Probing
         ctx = self._stage_http(ctx)
         if not self.running: return ctx
         
-        # Stage 2: Crawling
+        # Stage 4: Crawling
         ctx = self._stage_crawl(ctx)
         if not self.running: return ctx
         
-        # Stage 3: URL Discovery
+        # Stage 5: URL Discovery
         ctx = self._stage_urls(ctx)
         if not self.running: return ctx
         
-        # Stage 4: JS Analysis
+        # Stage 6: JS Analysis
         ctx = self._stage_js(ctx)
         if not self.running: return ctx
         
-        # Stage 5: Content Discovery
+        # Stage 7: Content Discovery
         ctx = self._stage_content(ctx)
         if not self.running: return ctx
         
-        # Stage 6: Screenshots
+        # Stage 8: Screenshots
         ctx = self._stage_screenshots(ctx)
         if not self.running: return ctx
         
-        # Stage 7: Vulnerability Scanning
+        # Stage 9: Vulnerability Scanning
         ctx = self._stage_vulns(ctx, focused=True)
         
         return ctx
@@ -578,6 +602,51 @@ class MacaronEngine:
         
         return ctx
     
+    def _stage_ports_light(self, ctx: ScanContext) -> ScanContext:
+        """Lightweight port scanning for NARROW mode - common web ports only"""
+        hosts = list(ctx.resolved.keys()) if ctx.resolved else list(ctx.subdomains)
+        if not hosts:
+            return ctx
+        
+        logger.info("\n[STAGE 2] Port Scanning (common web ports)")
+        
+        # Common web ports
+        web_ports = "80,443,8080,8443,8000,8888,3000,5000,9000,9443"
+        
+        if is_installed("naabu"):
+            logger.info(f"  → naabu ({len(hosts)} hosts, web ports only)")
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write('\n'.join(hosts))
+                temp_file = f.name
+            
+            try:
+                cmd = [
+                    "naabu", "-l", temp_file, "-json", "-silent", "-p", web_ports,
+                    "-rate", str(self.rate_limit), "-c", str(min(self.threads, 10))
+                ]
+                code, out, _ = self._cmd(cmd, 300)
+                if code == 0:
+                    for line in out.split('\n'):
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                host = data.get("host", "")
+                                port = data.get("port", 0)
+                                if host and port:
+                                    if host not in ctx.ports:
+                                        ctx.ports[host] = []
+                                    ctx.ports[host].append(port)
+                            except:
+                                pass
+            finally:
+                Path(temp_file).unlink(missing_ok=True)
+        
+        total_ports = sum(len(p) for p in ctx.ports.values())
+        logger.info(f"  ✓ Open ports: {total_ports}")
+        
+        return ctx
+    
     def _stage_http(self, ctx: ScanContext) -> ScanContext:
         """HTTP probing with tech detection"""
         targets = set(ctx.subdomains)
@@ -628,42 +697,57 @@ class MacaronEngine:
         return ctx
     
     def _stage_urls(self, ctx: ScanContext) -> ScanContext:
-        """URL discovery from archives"""
-        targets = list(ctx.live_hosts)[:20] if ctx.live_hosts else [ctx.target]
+        """URL discovery from archives (passive first, then active)"""
+        # Configurable limit, default to all live hosts
+        max_targets = 100  # Reasonable limit to avoid overload
+        targets = list(ctx.live_hosts)[:max_targets] if ctx.live_hosts else [ctx.target]
         
         logger.info("\n[STAGE 5] URL Discovery")
         
         all_urls = set()
+        clean_domain = strip_protocol(ctx.target)
         
-        # GAU
+        # === PASSIVE TOOLS FIRST (archive-based) ===
+        
+        # GAU - expects domain without protocol
         if is_installed("gau"):
             logger.info("  → gau")
-            for target in targets[:5]:
-                code, out, _ = self._cmd(["gau", "--subs", target], 300)
-                if code == 0:
-                    urls = [l.strip() for l in out.split('\n') if l.strip()]
-                    all_urls.update(urls)
-            logger.info(f"    Found {len(all_urls)}")
-        
-        # Waybackurls
-        if is_installed("waybackurls"):
-            logger.info("  → waybackurls")
-            code, out, _ = self._cmd(["waybackurls", ctx.target], 300)
+            code, out, _ = self._cmd(["gau", "--subs", clean_domain], 300)
             if code == 0:
                 urls = [l.strip() for l in out.split('\n') if l.strip()]
                 all_urls.update(urls)
                 logger.info(f"    Found {len(urls)}")
         
-        # Katana
+        # Waybackurls - expects input via STDIN
+        if is_installed("waybackurls"):
+            logger.info("  → waybackurls")
+            code, out, _ = self._cmd(["waybackurls"], 300, stdin_input=clean_domain)
+            if code == 0:
+                urls = [l.strip() for l in out.split('\n') if l.strip()]
+                all_urls.update(urls)
+                logger.info(f"    Found {len(urls)}")
+        
+        # Waymore
+        if is_installed("waymore"):
+            logger.info("  → waymore")
+            code, out, _ = self._cmd(["waymore", "-i", clean_domain, "-mode", "U"], 600)
+            if code == 0:
+                urls = [l.strip() for l in out.split('\n') if l.strip()]
+                all_urls.update(urls)
+                logger.info(f"    Found {len(urls)}")
+        
+        # === ACTIVE TOOLS (crawlers) ===
+        
+        # Katana - active crawler
         if is_installed("katana") and ctx.live_hosts:
             logger.info("  → katana")
             with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write('\n'.join(list(ctx.live_hosts)[:10]))
+                f.write('\n'.join(list(ctx.live_hosts)[:20]))
                 temp_file = f.name
             
             try:
                 code, out, _ = self._cmd(
-                    ["katana", "-list", temp_file, "-silent", "-d", "2", "-jc",
+                    ["katana", "-list", temp_file, "-silent", "-d", "2",
                      "-rate-limit", str(self.rate_limit), "-concurrency", str(min(self.threads, 10))], 900
                 )
                 if code == 0:
@@ -672,14 +756,6 @@ class MacaronEngine:
                     logger.info(f"    Found {len(urls)}")
             finally:
                 Path(temp_file).unlink(missing_ok=True)
-        
-        # Waymore
-        if is_installed("waymore"):
-            logger.info("  → waymore")
-            code, out, _ = self._cmd(["waymore", "-i", ctx.target, "-mode", "U"], 600)
-            if code == 0:
-                urls = [l.strip() for l in out.split('\n') if l.strip()]
-                all_urls.update(urls)
         
         ctx.urls = all_urls
         ctx.js_files = {u for u in all_urls if u.endswith('.js') or ('.js?' in u)}
@@ -857,8 +933,9 @@ class MacaronEngine:
             try:
                 cmd = [
                     "nuclei", "-l", temp_file, 
-                    "-o", str(output_file), "-json", "-silent",
-                    "-rate-limit", str(self.rate_limit), "-c", str(min(self.threads, 25))
+                    "-o", str(output_file), "-jsonl", "-silent",
+                    "-rate-limit", str(self.rate_limit), "-c", str(min(self.threads, 25)),
+                    "-nh"  # No update check, use installed templates
                 ]
                 
                 if focused:
@@ -1109,22 +1186,45 @@ def cmd_config(args):
 def cmd_list(args):
     """List targets, tools, or results"""
     if args.what == "tools":
-        tools = [
-            "subfinder", "amass", "assetfinder", "findomain", "chaos",
-            "httpx", "httprobe", "dnsx", "massdns",
-            "naabu", "masscan", "nmap",
-            "gau", "waymore", "waybackurls", "katana", "hakrawler",
-            "getJS", "linkfinder", "secretfinder",
-            "ffuf", "feroxbuster", "dirsearch",
-            "nuclei", "nikto",
-            "gowitness", "eyewitness"
-        ]
+        # Categorized tools for better visibility
+        tool_categories = {
+            "Subdomain Discovery": ["subfinder", "amass", "assetfinder", "findomain", "chaos"],
+            "DNS Resolution": ["dnsx", "massdns"],
+            "Port Scanning": ["naabu", "masscan", "nmap"],
+            "HTTP Probing": ["httpx", "httprobe"],
+            "URL Discovery": ["gau", "waymore", "waybackurls", "katana", "hakrawler"],
+            "JS Analysis": ["getJS", "linkfinder", "secretfinder"],
+            "Content Discovery": ["ffuf", "feroxbuster", "dirsearch"],
+            "Vuln Scanning": ["nuclei", "nikto"],
+            "Screenshots": ["gowitness", "eyewitness"],
+            "Utilities": ["proxychains4", "jq", "curl"]
+        }
         
-        print("Installed Tools:")
-        for tool in tools:
-            status = "✓" if is_installed(tool) else "✗"
-            color = "\033[32m" if is_installed(tool) else "\033[31m"
-            print(f"  {color}[{status}]\033[0m {tool}")
+        total_installed = 0
+        total_tools = 0
+        
+        print("\n\033[1m=== INSTALLED TOOLS ===\033[0m\n")
+        
+        for category, tools in tool_categories.items():
+            installed = sum(1 for t in tools if is_installed(t))
+            total_installed += installed
+            total_tools += len(tools)
+            
+            print(f"\033[1;34m{category}\033[0m ({installed}/{len(tools)})")
+            for tool in tools:
+                if is_installed(tool):
+                    print(f"  \033[32m✓\033[0m {tool}")
+                else:
+                    print(f"  \033[31m✗\033[0m {tool}")
+            print()
+        
+        # Summary
+        pct = int((total_installed / total_tools) * 100) if total_tools else 0
+        color = "\033[32m" if pct >= 70 else ("\033[33m" if pct >= 40 else "\033[31m")
+        print(f"Total: {color}{total_installed}/{total_tools} ({pct}%)\033[0m tools installed")
+        
+        if total_installed < 10:
+            print("\n\033[33mTip:\033[0m Run 'sudo macaron install' to install missing tools")
     
     elif args.what == "results":
         if not DATA_DIR.exists():
@@ -1509,6 +1609,125 @@ def cmd_watch(args):
     return 0
 
 
+def cmd_verify(args):
+    """Verify tool installations and provide fixes"""
+    print("\n\033[1m=== MACARON TOOL VERIFICATION ===\033[0m\n")
+    
+    # Core tools required for basic functionality
+    core_tools = {
+        "subfinder": "go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
+        "httpx": "go install github.com/projectdiscovery/httpx/cmd/httpx@latest",
+        "nuclei": "go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
+    }
+    
+    # Recommended tools
+    recommended_tools = {
+        "dnsx": "go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest",
+        "naabu": "go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
+        "katana": "go install github.com/projectdiscovery/katana/cmd/katana@latest",
+        "gau": "go install github.com/lc/gau/v2/cmd/gau@latest",
+        "waybackurls": "go install github.com/tomnomnom/waybackurls@latest",
+        "ffuf": "go install github.com/ffuf/ffuf/v2@latest",
+        "gowitness": "go install github.com/sensepost/gowitness@latest",
+    }
+    
+    # Optional tools
+    optional_tools = {
+        "amass": "apt install amass OR go install github.com/owasp-amass/amass/v4/...@master",
+        "assetfinder": "go install github.com/tomnomnom/assetfinder@latest",
+        "findomain": "curl -LO https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux.zip",
+        "chaos": "go install github.com/projectdiscovery/chaos-client/cmd/chaos@latest",
+        "hakrawler": "go install github.com/hakluke/hakrawler@latest",
+        "waymore": "pip3 install waymore",
+        "linkfinder": "pip3 install linkfinder",
+        "getJS": "go install github.com/003random/getJS@latest",
+    }
+    
+    issues = []
+    
+    # Check Go installation
+    print("\033[1;34m[1] Checking Go installation...\033[0m")
+    if is_installed("go"):
+        code, out, _ = run_cmd(["go", "version"], 10)
+        if code == 0:
+            print(f"  \033[32m✓\033[0m Go: {out.strip()}")
+        else:
+            print(f"  \033[33m!\033[0m Go installed but version check failed")
+    else:
+        print("  \033[31m✗\033[0m Go not installed")
+        issues.append("Go is required. Install with: sudo apt install golang-go")
+    
+    # Check GOPATH
+    gopath = os.environ.get("GOPATH", str(Path.home() / "go"))
+    gobin = Path(gopath) / "bin"
+    if gobin.exists() and str(gobin) in os.environ.get("PATH", ""):
+        print(f"  \033[32m✓\033[0m GOPATH/bin in PATH")
+    else:
+        print(f"  \033[33m!\033[0m GOPATH/bin not in PATH")
+        issues.append(f"Add to ~/.bashrc: export PATH=$PATH:{gobin}")
+    
+    # Check core tools
+    print("\n\033[1;34m[2] Core Tools (required):\033[0m")
+    for tool, install_cmd in core_tools.items():
+        if is_installed(tool):
+            print(f"  \033[32m✓\033[0m {tool}")
+        else:
+            print(f"  \033[31m✗\033[0m {tool}")
+            issues.append(f"Install {tool}: {install_cmd}")
+    
+    # Check recommended tools
+    print("\n\033[1;34m[3] Recommended Tools:\033[0m")
+    for tool, install_cmd in recommended_tools.items():
+        if is_installed(tool):
+            print(f"  \033[32m✓\033[0m {tool}")
+        else:
+            print(f"  \033[33m○\033[0m {tool} (optional)")
+    
+    # Check optional tools
+    print("\n\033[1;34m[4] Optional Tools:\033[0m")
+    for tool, install_cmd in optional_tools.items():
+        if is_installed(tool):
+            print(f"  \033[32m✓\033[0m {tool}")
+        else:
+            print(f"  \033[90m○\033[0m {tool}")
+    
+    # Check proxychains
+    print("\n\033[1;34m[5] Proxy Support:\033[0m")
+    if is_installed("proxychains4"):
+        print(f"  \033[32m✓\033[0m proxychains4 installed")
+        # Check config
+        pc_config = Path("/etc/proxychains4.conf")
+        if pc_config.exists():
+            print(f"  \033[32m✓\033[0m Config: {pc_config}")
+        else:
+            print(f"  \033[33m!\033[0m Config not found at {pc_config}")
+    else:
+        print("  \033[31m✗\033[0m proxychains4 not installed")
+        issues.append("Install proxychains: sudo apt install proxychains4")
+    
+    # Check nuclei templates
+    print("\n\033[1;34m[6] Nuclei Templates:\033[0m")
+    nuclei_templates = Path.home() / "nuclei-templates"
+    if nuclei_templates.exists():
+        template_count = sum(1 for _ in nuclei_templates.rglob("*.yaml"))
+        print(f"  \033[32m✓\033[0m {template_count} templates in {nuclei_templates}")
+    else:
+        print(f"  \033[31m✗\033[0m Templates not found")
+        issues.append("Update nuclei templates: nuclei -update-templates")
+    
+    # Summary
+    print("\n" + "="*50)
+    if issues:
+        print(f"\033[33m{len(issues)} issue(s) found:\033[0m\n")
+        for i, issue in enumerate(issues, 1):
+            print(f"  {i}. {issue}")
+        print("\n\033[1mQuick fix:\033[0m sudo macaron install")
+    else:
+        print("\033[32m✓ All checks passed! Ready to scan.\033[0m")
+    
+    return 0 if not issues else 1
+
+
 # ============== MAIN ==============
 
 def main():
@@ -1522,11 +1741,13 @@ Examples:
   macaron scan -t app.example.com -m narrow   # Narrow application scan
   macaron scan -f targets.txt              # Scan from file
   macaron scan -t target.com --no-proxy    # Without proxychains
+  macaron scan -t target.com --slow        # Slow mode (10 req/s)
   macaron status                           # Show scan status & summary
   macaron show -d example.com              # View all results for domain
   macaron show -w vulns                    # Show only vulnerabilities
   macaron watch                            # Live monitor scan progress
   macaron list tools                       # Show installed tools
+  macaron verify                           # Verify installations & diagnose
   macaron config webhook --url URL         # Set Discord webhook
   macaron export -o results.json           # Export all data
         """
@@ -1588,6 +1809,9 @@ Examples:
     watch_p = subparsers.add_parser("watch", help="Live monitor scan progress")
     watch_p.add_argument("-i", "--interval", type=int, default=2, help="Refresh interval in seconds")
     
+    # Verify - NEW
+    subparsers.add_parser("verify", help="Verify tool installations and diagnose issues")
+    
     args = parser.parse_args()
     
     # Setup logging
@@ -1612,6 +1836,7 @@ Examples:
         "status": cmd_status,
         "show": cmd_show,
         "watch": cmd_watch,
+        "verify": cmd_verify,
     }
     
     return commands.get(args.command, lambda _: parser.print_help())(args)
