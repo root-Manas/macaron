@@ -15,7 +15,7 @@ import re
 import time
 import threading
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -49,7 +49,7 @@ except ImportError:
 
 # ============== CONSTANTS ==============
 
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 BANNER = """[bold cyan]
 ███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗
 ████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔═══██╗████╗  ██║
@@ -57,7 +57,7 @@ BANNER = """[bold cyan]
 ██║╚██╔╝██║██╔══██║██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║
 ██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║
 ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝[/]
-[dim]                  v{version} - YAML-Configured Recon[/]
+[dim]        v{version} | github.com/root-Manas/macaron[/]
 """
 
 # Directories
@@ -290,7 +290,7 @@ def save_config(config: Dict):
         json.dump(config, f, indent=2)
 
 def get_timestamp() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 # ============== SCAN CONTEXT ==============
 
@@ -886,15 +886,18 @@ class DiscordNotifier:
 def cmd_scan(args):
     """Run a scan"""
     targets = []
-    if args.target:
-        targets = args.target if isinstance(args.target, list) else [args.target]
-    elif args.file:
+    
+    # File takes priority if specified
+    if args.file:
         targets = load_list(Path(args.file))
+    elif args.target:
+        targets = args.target if isinstance(args.target, list) else [args.target]
     elif args.stdin:
         targets = [l.strip() for l in sys.stdin if l.strip()]
     
     if not targets:
         console.print("[red]✗ No targets provided[/]") if console else print("No targets")
+        console.print("[dim]Usage: macaron -s target.com OR macaron -F targets.txt[/]") if console else None
         return 1
     
     # Mode selection (now supports custom modes from pipeline.yaml)
@@ -1221,7 +1224,7 @@ Pipeline Configuration:
     args = parser.parse_args()
     
     # Route to appropriate command
-    if args.target is not None:
+    if args.target is not None or args.file or args.stdin:
         return cmd_scan(args)
     elif args.status:
         return cmd_status(args)
@@ -1253,7 +1256,7 @@ Pipeline Configuration:
     else:
         # Show help with banner
         if console:
-            console.print(Panel(BANNER.format(version=VERSION), border_style="cyan", box=box.DOUBLE))
+            console.print(BANNER.format(version=VERSION))
         parser.print_help()
         return 0
 
