@@ -1,0 +1,468 @@
+# ============================================================================
+# MACARON v2 - Pipeline Configuration
+# ============================================================================
+# This file controls how scans are executed. Edit this to customize:
+#   - Which tools run in each mode (wide/narrow/fast)
+#   - Command-line arguments for each tool
+#   - Timeouts, rate limits, and threading
+#   - Pipeline order and data flow
+#
+# After editing, changes take effect on next scan. No restart needed.
+# ============================================================================
+
+# ------------------------------------------------------------------------------
+# GLOBAL SETTINGS
+# ------------------------------------------------------------------------------
+global:
+  # Default rate limit (requests per second)
+  rate_limit: 100
+  
+  # Default threads for parallel operations
+  threads: 25
+  
+  # Use proxychains4 by default (set to false to disable)
+  use_proxy: true
+  
+  # Slow mode settings (--slow flag)
+  slow_mode:
+    rate_limit: 10
+    threads: 5
+
+# ------------------------------------------------------------------------------
+# TOOL DEFINITIONS
+# ------------------------------------------------------------------------------
+# Each tool has:
+#   - cmd: The command template. Use {placeholders} for dynamic values
+#   - timeout: Max seconds to wait
+#   - input: What this tool needs (target, file, stdin)
+#   - output: What it produces (stdout_lines, json_lines, file)
+#   - installed_check: Binary name to check if installed
+#
+# Available placeholders:
+#   {target}     - The target domain
+#   {input_file} - Temp file with input list
+#   {output_file}- Output file path
+#   {threads}    - Thread count from global/override
+#   {rate}       - Rate limit from global/override
+# ------------------------------------------------------------------------------
+
+tools:
+  # ============ SUBDOMAIN ENUMERATION ============
+  
+  subfinder:
+    cmd: "subfinder -d {target} -silent -all -t {threads}"
+    timeout: 600
+    input: target
+    output: stdout_lines
+    installed_check: subfinder
+    description: "Fast passive subdomain enumeration using multiple sources"
+  
+  amass:
+    cmd: "amass enum -passive -d {target} -dns-qps 50 -timeout 10"
+    timeout: 600
+    input: target
+    output: stdout_lines
+    installed_check: amass
+    description: "OWASP Amass passive enumeration (rate-limited)"
+  
+  assetfinder:
+    cmd: "assetfinder --subs-only {target}"
+    timeout: 300
+    input: target
+    output: stdout_lines
+    installed_check: assetfinder
+    description: "Quick asset/subdomain finder"
+  
+  findomain:
+    cmd: "findomain -t {target} -q"
+    timeout: 300
+    input: target
+    output: stdout_lines
+    installed_check: findomain
+    description: "Fast cross-platform subdomain finder"
+  
+  crtsh:
+    cmd: "curl -s 'https://crt.sh/?q=%25.{target}&output=json' | jq -r '.[].name_value' | sort -u"
+    timeout: 60
+    input: target
+    output: stdout_lines
+    installed_check: curl
+    description: "Certificate transparency log search"
+  
+  # ============ DNS RESOLUTION ============
+  
+  dnsx:
+    cmd: "dnsx -l {input_file} -a -resp -json -silent -t {threads}"
+    timeout: 600
+    input: file
+    output: json_lines
+    installed_check: dnsx
+    parser: dnsx
+    description: "Fast DNS resolver with JSON output"
+  
+  # ============ PORT SCANNING ============
+  
+  naabu:
+    cmd: "naabu -l {input_file} -json -silent -top-ports 1000 -rate {rate} -c {threads} -retries 2"
+    timeout: 1800
+    input: file
+    output: json_lines
+    installed_check: naabu
+    parser: naabu
+    description: "Fast port scanner (top 1000 ports)"
+  
+  naabu_quick:
+    cmd: "naabu -l {input_file} -json -silent -p 80,443,8080,8443,8000,3000,5000,9000 -rate {rate}"
+    timeout: 300
+    input: file
+    output: json_lines
+    installed_check: naabu
+    parser: naabu
+    description: "Quick port scan (common web ports only)"
+  
+  # ============ HTTP PROBING ============
+  
+  httpx:
+    cmd: "httpx -l {input_file} -json -silent -sc -title -td -cdn -follow-redirects -rate-limit {rate} -threads {threads}"
+    timeout: 1800
+    input: file
+    output: json_lines
+    installed_check: httpx
+    parser: httpx
+    description: "HTTP prober with tech detection and CDN identification"
+  
+  # ============ URL DISCOVERY ============
+  
+  gau:
+    cmd: "gau --subs --threads 5 {target}"
+    timeout: 300
+    input: target
+    output: stdout_lines
+    installed_check: gau
+    description: "Fetch URLs from Wayback, Common Crawl, OTX, URLScan"
+  
+  waybackurls:
+    cmd: "echo {target} | waybackurls"
+    timeout: 300
+    input: target
+    output: stdout_lines
+    installed_check: waybackurls
+    description: "Fetch URLs from Wayback Machine"
+  
+  katana:
+    cmd: "katana -list {input_file} -silent -d {depth} -jc -iqp -c {threads} -rl {rate}"
+    timeout: 900
+    input: file
+    output: stdout_lines
+    installed_check: katana
+    options:
+      depth: 3
+    description: "Modern crawler with JavaScript parsing"
+  
+  katana_deep:
+    cmd: "katana -list {input_file} -silent -d 5 -jc -iqp -c {threads} -rl {rate}"
+    timeout: 1200
+    input: file
+    output: stdout_lines
+    installed_check: katana
+    description: "Deep crawling (depth 5)"
+  
+  hakrawler:
+    cmd: "echo {target} | hakrawler -d 2 -subs -u"
+    timeout: 300
+    input: target
+    output: stdout_lines
+    installed_check: hakrawler
+    description: "Fast web crawler for endpoints"
+  
+  # ============ JS ANALYSIS ============
+  
+  getjs:
+    cmd: "getJS --url {target} --complete"
+    timeout: 120
+    input: target
+    output: stdout_lines
+    installed_check: getJS
+    description: "Extract JavaScript file URLs"
+  
+  # ============ CONTENT DISCOVERY ============
+  
+  ffuf:
+    cmd: "ffuf -u {target}/FUZZ -w {wordlist} -o {output_file} -of json -mc 200,201,204,301,302,307,401,403,405 -t {threads} -rate {rate} -s"
+    timeout: 600
+    input: target
+    output: file
+    installed_check: ffuf
+    options:
+      wordlist: "~/.macaron/wordlists/common.txt"
+    description: "Fast web fuzzer for content discovery"
+  
+  # ============ SCREENSHOTS ============
+  
+  gowitness:
+    cmd: "gowitness scan file -f {input_file} --screenshot-path {output_dir} --delay 2 --threads {threads}"
+    timeout: 3600
+    input: file
+    output: directory
+    installed_check: gowitness
+    description: "Screenshot web pages (gowitness v3)"
+  
+  # ============ VULNERABILITY SCANNING ============
+  
+  nuclei:
+    cmd: "nuclei -l {input_file} -o {output_file} -jsonl -silent -severity {severity} -rl {rate} -c {threads} -nh"
+    timeout: 7200
+    input: file
+    output: json_lines
+    installed_check: nuclei
+    options:
+      severity: "critical,high,medium"
+    description: "Template-based vulnerability scanner"
+  
+  nuclei_fast:
+    cmd: "nuclei -l {input_file} -o {output_file} -jsonl -silent -severity critical,high -rl {rate} -c {threads} -nh"
+    timeout: 3600
+    input: file
+    output: json_lines
+    installed_check: nuclei
+    description: "Quick vuln scan (critical+high only)"
+
+# ------------------------------------------------------------------------------
+# SCAN PIPELINES
+# ------------------------------------------------------------------------------
+# Define what runs in each scan mode. Each stage:
+#   - name: Display name for the stage
+#   - tools: List of tools to run (in parallel within stage)
+#   - input_from: Where to get input (previous stage output or 'target')
+#   - output_to: What asset type this produces
+#   - filter: Optional filter on input (e.g., only .js files)
+#   - enabled: Set to false to skip this stage
+# ------------------------------------------------------------------------------
+
+pipelines:
+  # ============ WIDE MODE (Full Infrastructure) ============
+  wide:
+    description: "Full infrastructure reconnaissance"
+    stages:
+      - name: "Subdomain Discovery"
+        emoji: "🔍"
+        tools: [subfinder, assetfinder, findomain, crtsh, amass]
+        input_from: target
+        output_to: subdomains
+        enabled: true
+      
+      - name: "DNS Resolution"
+        emoji: "📡"
+        tools: [dnsx]
+        input_from: subdomains
+        output_to: resolved
+        enabled: true
+      
+      - name: "Port Scanning"
+        emoji: "🔌"
+        tools: [naabu]
+        input_from: resolved
+        output_to: ports
+        enabled: true
+      
+      - name: "HTTP Probing"
+        emoji: "🌐"
+        tools: [httpx]
+        input_from: subdomains+ports  # Combines subdomains with non-standard ports
+        output_to: live_hosts
+        enabled: true
+      
+      - name: "URL Discovery"
+        emoji: "🔗"
+        tools: [gau, waybackurls, katana]
+        input_from: live_hosts
+        output_to: urls
+        enabled: true
+      
+      - name: "JS Analysis"
+        emoji: "📜"
+        tools: [getjs]
+        input_from: live_hosts
+        output_to: js_files
+        limit: 20  # Only process first N hosts
+        enabled: true
+      
+      - name: "Screenshots"
+        emoji: "📸"
+        tools: [gowitness]
+        input_from: live_hosts
+        output_to: screenshots
+        limit: 50
+        enabled: true
+      
+      - name: "Vulnerability Scan"
+        emoji: "🎯"
+        tools: [nuclei]
+        input_from: live_hosts
+        output_to: vulnerabilities
+        enabled: true
+
+  # ============ NARROW MODE (Application Focused) ============
+  narrow:
+    description: "Application-focused testing"
+    stages:
+      - name: "DNS Validation"
+        emoji: "📡"
+        tools: [dnsx]
+        input_from: target
+        output_to: resolved
+        enabled: true
+      
+      - name: "Port Scan"
+        emoji: "🔌"
+        tools: [naabu_quick]
+        input_from: target
+        output_to: ports
+        enabled: true
+      
+      - name: "HTTP Probing"
+        emoji: "🌐"
+        tools: [httpx]
+        input_from: target
+        output_to: live_hosts
+        enabled: true
+      
+      - name: "Deep Crawling"
+        emoji: "🕷️"
+        tools: [katana_deep, hakrawler]
+        input_from: live_hosts
+        output_to: urls
+        enabled: true
+      
+      - name: "URL Archives"
+        emoji: "🔗"
+        tools: [gau, waybackurls]
+        input_from: target
+        output_to: urls
+        enabled: true
+      
+      - name: "JS Analysis"
+        emoji: "📜"
+        tools: [getjs]
+        input_from: live_hosts
+        output_to: js_files
+        enabled: true
+      
+      - name: "Content Discovery"
+        emoji: "📂"
+        tools: [ffuf]
+        input_from: live_hosts
+        output_to: content
+        limit: 3
+        enabled: true
+      
+      - name: "Screenshots"
+        emoji: "📸"
+        tools: [gowitness]
+        input_from: live_hosts
+        output_to: screenshots
+        enabled: true
+      
+      - name: "Vulnerability Scan"
+        emoji: "🎯"
+        tools: [nuclei]
+        input_from: live_hosts
+        output_to: vulnerabilities
+        enabled: true
+
+  # ============ FAST MODE (Quick Wins) ============
+  fast:
+    description: "Quick scan for immediate wins"
+    stages:
+      - name: "Quick Subdomains"
+        emoji: "🔍"
+        tools: [subfinder, crtsh]
+        input_from: target
+        output_to: subdomains
+        enabled: true
+      
+      - name: "HTTP Probing"
+        emoji: "🌐"
+        tools: [httpx]
+        input_from: subdomains
+        output_to: live_hosts
+        limit: 100
+        enabled: true
+      
+      - name: "Quick Vuln Scan"
+        emoji: "🎯"
+        tools: [nuclei_fast]
+        input_from: live_hosts
+        output_to: vulnerabilities
+        limit: 50
+        enabled: true
+
+# ------------------------------------------------------------------------------
+# OUTPUT PARSERS
+# ------------------------------------------------------------------------------
+# Define how to parse JSON output from tools
+# ------------------------------------------------------------------------------
+
+parsers:
+  dnsx:
+    host_field: "host"
+    data_field: "a"
+    
+  naabu:
+    host_field: "host"
+    port_field: "port"
+    
+  httpx:
+    url_field: "url"
+    tech_field: "tech"
+    status_field: "status_code"
+    title_field: "title"
+
+# ------------------------------------------------------------------------------
+# NOTIFICATIONS
+# ------------------------------------------------------------------------------
+discord:
+  enabled: false
+  webhook_url: ""
+  notify_on:
+    - scan_start
+    - scan_complete
+    - vulnerability_found
+  
+  # Only notify for these severity levels
+  vuln_severity: [critical, high]
+
+# ------------------------------------------------------------------------------
+# CUSTOMIZATION EXAMPLES
+# ------------------------------------------------------------------------------
+# 
+# To disable a tool in wide mode:
+#   1. Find the stage in pipelines.wide.stages
+#   2. Remove the tool from the tools list, or
+#   3. Set enabled: false on the stage
+#
+# To change subfinder options:
+#   1. Find tools.subfinder.cmd
+#   2. Edit the command string
+#   Example: Add "-sources crtsh,github" to only use specific sources
+#
+# To add a new tool:
+#   1. Add a new entry under tools:
+#      mytool:
+#        cmd: "mytool -input {input_file} -output {output_file}"
+#        timeout: 300
+#        input: file
+#        output: stdout_lines
+#        installed_check: mytool
+#   2. Add it to a pipeline stage
+#
+# To create a custom pipeline:
+#   1. Add new entry under pipelines:
+#      custom:
+#        description: "My custom scan"
+#        stages:
+#          - name: "My Stage"
+#            tools: [tool1, tool2]
+#            ...
+#   2. Run with: macaron -s target.com -m custom
+# ------------------------------------------------------------------------------

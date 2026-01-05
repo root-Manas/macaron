@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MACARON v2.0 - Massive Automated Comprehensive Asset Reconnaissance & Offensive Nexus
-A beautiful, optimized security reconnaissance CLI with modern UI
+MACARON v2.1 - Massive Automated Comprehensive Asset Reconnaissance & Offensive Nexus
+A configurable security reconnaissance CLI with YAML-based pipeline configuration
 """
 import argparse
 import sys
@@ -22,6 +22,13 @@ from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 
+# YAML support
+try:
+    import yaml
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
+
 # Rich for beautiful CLI UI
 try:
     from rich.console import Console
@@ -39,19 +46,18 @@ try:
 except ImportError:
     RICH_AVAILABLE = False
     print("[!] Rich library not found. Install with: pip install rich")
-    print("[!] Falling back to basic output...")
 
 # ============== CONSTANTS ==============
 
-VERSION = "2.0.0"
-BANNER = """
-[bold cyan]███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗[/]
-[bold cyan]████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔═══██╗████╗  ██║[/]
-[bold blue]██╔████╔██║███████║██║     ███████║██████╔╝██║   ██║██╔██╗ ██║[/]
-[bold blue]██║╚██╔╝██║██╔══██║██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║[/]
-[bold magenta]██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║[/]
-[bold magenta]╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝[/]
-[dim]                    v{version} - Security Recon Platform[/]
+VERSION = "2.1.0"
+BANNER = """[bold cyan]
+███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗
+████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔═══██╗████╗  ██║
+██╔████╔██║███████║██║     ███████║██████╔╝██║   ██║██╔██╗ ██║
+██║╚██╔╝██║██╔══██║██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║
+██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║
+╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝[/]
+[dim]                  v{version} - YAML-Configured Recon[/]
 """
 
 # Directories
@@ -61,9 +67,135 @@ CONFIG_DIR = HOME_DIR / "config"
 STATE_DIR = HOME_DIR / "state"
 LOGS_DIR = HOME_DIR / "logs"
 WORDLISTS_DIR = HOME_DIR / "wordlists"
+PIPELINE_FILE = CONFIG_DIR / "pipeline.yaml"
+
+# Bundled pipeline config path (in repo)
+BUNDLED_PIPELINE = Path(__file__).parent / "config" / "pipeline.yaml"
 
 # Console for Rich output
 console = Console() if RICH_AVAILABLE else None
+
+# ============== PIPELINE CONFIG ==============
+
+def get_default_pipeline_config() -> Dict:
+    """Return default embedded pipeline config"""
+    return {
+        "global": {
+            "rate_limit": 100,
+            "threads": 25,
+            "use_proxy": True,
+            "slow_mode": {"rate_limit": 10, "threads": 5}
+        },
+        "tools": {
+            "subfinder": {"cmd": "subfinder -d {target} -silent -all -t {threads}", "timeout": 600, "input": "target", "output": "stdout_lines", "installed_check": "subfinder"},
+            "amass": {"cmd": "amass enum -passive -d {target} -dns-qps 50 -timeout 10", "timeout": 600, "input": "target", "output": "stdout_lines", "installed_check": "amass"},
+            "assetfinder": {"cmd": "assetfinder --subs-only {target}", "timeout": 300, "input": "target", "output": "stdout_lines", "installed_check": "assetfinder"},
+            "findomain": {"cmd": "findomain -t {target} -q", "timeout": 300, "input": "target", "output": "stdout_lines", "installed_check": "findomain"},
+            "crtsh": {"cmd": "curl -s 'https://crt.sh/?q=%25.{target}&output=json' | jq -r '.[].name_value' | sort -u", "timeout": 60, "input": "target", "output": "stdout_lines", "installed_check": "curl"},
+            "dnsx": {"cmd": "dnsx -l {input_file} -a -resp -json -silent -t {threads}", "timeout": 600, "input": "file", "output": "json_lines", "installed_check": "dnsx", "parser": "dnsx"},
+            "naabu": {"cmd": "naabu -l {input_file} -json -silent -top-ports 1000 -rate {rate} -c {threads} -retries 2", "timeout": 1800, "input": "file", "output": "json_lines", "installed_check": "naabu", "parser": "naabu"},
+            "naabu_quick": {"cmd": "naabu -l {input_file} -json -silent -p 80,443,8080,8443,8000,3000,5000,9000 -rate {rate}", "timeout": 300, "input": "file", "output": "json_lines", "installed_check": "naabu", "parser": "naabu"},
+            "httpx": {"cmd": "httpx -l {input_file} -json -silent -sc -title -td -cdn -follow-redirects -rate-limit {rate} -threads {threads}", "timeout": 1800, "input": "file", "output": "json_lines", "installed_check": "httpx", "parser": "httpx"},
+            "gau": {"cmd": "gau --subs --threads 5 {target}", "timeout": 300, "input": "target", "output": "stdout_lines", "installed_check": "gau"},
+            "waybackurls": {"cmd": "echo {target} | waybackurls", "timeout": 300, "input": "target", "output": "stdout_lines", "installed_check": "waybackurls"},
+            "katana": {"cmd": "katana -list {input_file} -silent -d 3 -jc -iqp -c {threads} -rl {rate}", "timeout": 900, "input": "file", "output": "stdout_lines", "installed_check": "katana"},
+            "katana_deep": {"cmd": "katana -list {input_file} -silent -d 5 -jc -iqp -c {threads} -rl {rate}", "timeout": 1200, "input": "file", "output": "stdout_lines", "installed_check": "katana"},
+            "hakrawler": {"cmd": "echo {target} | hakrawler -d 2 -subs -u", "timeout": 300, "input": "target", "output": "stdout_lines", "installed_check": "hakrawler"},
+            "getjs": {"cmd": "getJS --url {target} --complete", "timeout": 120, "input": "target", "output": "stdout_lines", "installed_check": "getJS"},
+            "ffuf": {"cmd": "ffuf -u {target}/FUZZ -w {wordlist} -o {output_file} -of json -mc 200,201,204,301,302,307,401,403,405 -t {threads} -rate {rate} -s", "timeout": 600, "input": "target", "output": "file", "installed_check": "ffuf", "options": {"wordlist": "~/.macaron/wordlists/common.txt"}},
+            "gowitness": {"cmd": "gowitness scan file -f {input_file} --screenshot-path {output_dir} --delay 2 --threads {threads}", "timeout": 3600, "input": "file", "output": "directory", "installed_check": "gowitness"},
+            "nuclei": {"cmd": "nuclei -l {input_file} -o {output_file} -jsonl -silent -severity {severity} -rl {rate} -c {threads} -nh", "timeout": 7200, "input": "file", "output": "json_lines", "installed_check": "nuclei", "options": {"severity": "critical,high,medium"}},
+            "nuclei_fast": {"cmd": "nuclei -l {input_file} -o {output_file} -jsonl -silent -severity critical,high -rl {rate} -c {threads} -nh", "timeout": 3600, "input": "file", "output": "json_lines", "installed_check": "nuclei"},
+        },
+        "pipelines": {
+            "wide": {
+                "description": "Full infrastructure reconnaissance",
+                "stages": [
+                    {"name": "Subdomain Discovery", "emoji": "🔍", "tools": ["subfinder", "assetfinder", "findomain", "crtsh", "amass"], "input_from": "target", "output_to": "subdomains", "enabled": True},
+                    {"name": "DNS Resolution", "emoji": "📡", "tools": ["dnsx"], "input_from": "subdomains", "output_to": "resolved", "enabled": True},
+                    {"name": "Port Scanning", "emoji": "🔌", "tools": ["naabu"], "input_from": "resolved", "output_to": "ports", "enabled": True},
+                    {"name": "HTTP Probing", "emoji": "🌐", "tools": ["httpx"], "input_from": "subdomains+ports", "output_to": "live_hosts", "enabled": True},
+                    {"name": "URL Discovery", "emoji": "🔗", "tools": ["gau", "waybackurls", "katana"], "input_from": "live_hosts", "output_to": "urls", "enabled": True},
+                    {"name": "JS Analysis", "emoji": "📜", "tools": ["getjs"], "input_from": "live_hosts", "output_to": "js_files", "limit": 20, "enabled": True},
+                    {"name": "Screenshots", "emoji": "📸", "tools": ["gowitness"], "input_from": "live_hosts", "output_to": "screenshots", "limit": 50, "enabled": True},
+                    {"name": "Vulnerability Scan", "emoji": "🎯", "tools": ["nuclei"], "input_from": "live_hosts", "output_to": "vulnerabilities", "enabled": True},
+                ]
+            },
+            "narrow": {
+                "description": "Application-focused testing",
+                "stages": [
+                    {"name": "DNS Validation", "emoji": "📡", "tools": ["dnsx"], "input_from": "target", "output_to": "resolved", "enabled": True},
+                    {"name": "Port Scan", "emoji": "🔌", "tools": ["naabu_quick"], "input_from": "target", "output_to": "ports", "enabled": True},
+                    {"name": "HTTP Probing", "emoji": "🌐", "tools": ["httpx"], "input_from": "target", "output_to": "live_hosts", "enabled": True},
+                    {"name": "Deep Crawling", "emoji": "🕷️", "tools": ["katana_deep", "hakrawler"], "input_from": "live_hosts", "output_to": "urls", "enabled": True},
+                    {"name": "URL Archives", "emoji": "🔗", "tools": ["gau", "waybackurls"], "input_from": "target", "output_to": "urls", "enabled": True},
+                    {"name": "JS Analysis", "emoji": "📜", "tools": ["getjs"], "input_from": "live_hosts", "output_to": "js_files", "enabled": True},
+                    {"name": "Content Discovery", "emoji": "📂", "tools": ["ffuf"], "input_from": "live_hosts", "output_to": "content", "limit": 3, "enabled": True},
+                    {"name": "Screenshots", "emoji": "📸", "tools": ["gowitness"], "input_from": "live_hosts", "output_to": "screenshots", "enabled": True},
+                    {"name": "Vulnerability Scan", "emoji": "🎯", "tools": ["nuclei"], "input_from": "live_hosts", "output_to": "vulnerabilities", "enabled": True},
+                ]
+            },
+            "fast": {
+                "description": "Quick scan for immediate wins",
+                "stages": [
+                    {"name": "Quick Subdomains", "emoji": "🔍", "tools": ["subfinder", "crtsh"], "input_from": "target", "output_to": "subdomains", "enabled": True},
+                    {"name": "HTTP Probing", "emoji": "🌐", "tools": ["httpx"], "input_from": "subdomains", "output_to": "live_hosts", "limit": 100, "enabled": True},
+                    {"name": "Quick Vuln Scan", "emoji": "🎯", "tools": ["nuclei_fast"], "input_from": "live_hosts", "output_to": "vulnerabilities", "limit": 50, "enabled": True},
+                ]
+            }
+        },
+        "parsers": {
+            "dnsx": {"host_field": "host", "data_field": "a"},
+            "naabu": {"host_field": "host", "port_field": "port"},
+            "httpx": {"url_field": "url", "tech_field": "tech", "status_field": "status_code", "title_field": "title"},
+        },
+        "discord": {"enabled": False, "webhook_url": "", "notify_on": ["scan_start", "scan_complete", "vulnerability_found"], "vuln_severity": ["critical", "high"]}
+    }
+
+def load_pipeline_config() -> Dict:
+    """Load pipeline config from YAML file or use defaults"""
+    config = get_default_pipeline_config()
+    
+    # Try loading from user config
+    if PIPELINE_FILE.exists() and YAML_AVAILABLE:
+        try:
+            with open(PIPELINE_FILE) as f:
+                user_config = yaml.safe_load(f)
+                if user_config:
+                    # Deep merge user config with defaults
+                    config = deep_merge(config, user_config)
+        except Exception as e:
+            if console:
+                console.print(f"[yellow]Warning: Could not load pipeline.yaml: {e}[/]")
+    
+    # Try bundled config
+    elif BUNDLED_PIPELINE.exists() and YAML_AVAILABLE:
+        try:
+            with open(BUNDLED_PIPELINE) as f:
+                bundled = yaml.safe_load(f)
+                if bundled:
+                    config = deep_merge(config, bundled)
+        except:
+            pass
+    
+    return config
+
+def deep_merge(base: Dict, override: Dict) -> Dict:
+    """Deep merge two dictionaries"""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+def save_pipeline_config(config: Dict):
+    """Save pipeline config to YAML"""
+    ensure_dir(CONFIG_DIR)
+    if YAML_AVAILABLE:
+        with open(PIPELINE_FILE, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 # ============== ENUMS ==============
 
@@ -185,294 +317,164 @@ class ScanContext:
     errors: List[str] = field(default_factory=list)
     start_time: datetime = field(default_factory=datetime.now)
 
-# ============== TOOL RUNNER ==============
+# ============== TOOL RUNNER (YAML-DRIVEN) ==============
 
 class ToolRunner:
-    """Manages running individual recon tools with progress tracking"""
+    """Runs tools based on YAML pipeline configuration"""
     
-    def __init__(self, use_proxy: bool = True, rate_limit: int = 100, threads: int = 25):
+    def __init__(self, pipeline_config: Dict, use_proxy: bool = True, rate_limit: int = 100, threads: int = 25):
+        self.config = pipeline_config
+        self.tools = pipeline_config.get("tools", {})
+        self.parsers = pipeline_config.get("parsers", {})
         self.use_proxy = use_proxy and is_installed("proxychains4")
         self.rate_limit = rate_limit
         self.threads = threads
     
-    def run(self, cmd: List[str], timeout: int = 300, stdin_input: str = None) -> Tuple[int, str, str]:
-        """Execute a tool command"""
-        return run_cmd(cmd, timeout, self.use_proxy, stdin_input)
-    
-    # ==================== SUBDOMAIN TOOLS ====================
-    
-    def subfinder(self, target: str) -> Set[str]:
-        """Fast passive subdomain enumeration"""
-        cmd = ["subfinder", "-d", target, "-silent", "-all", "-t", str(self.threads)]
-        code, out, _ = self.run(cmd, 600)
-        return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
-    
-    def amass_passive(self, target: str) -> Set[str]:
-        """Amass passive mode with rate limiting"""
-        cmd = ["amass", "enum", "-passive", "-d", target, "-dns-qps", "50", "-timeout", "10"]
-        code, out, _ = self.run(cmd, 600)
-        return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
-    
-    def assetfinder(self, target: str) -> Set[str]:
-        """Quick asset finder"""
-        cmd = ["assetfinder", "--subs-only", target]
-        code, out, _ = self.run(cmd, 300)
-        return set(l.strip() for l in out.split('\n') if l.strip() and target in l) if code == 0 else set()
-    
-    def findomain(self, target: str) -> Set[str]:
-        """Fast cross-platform subdomain finder"""
-        cmd = ["findomain", "-t", target, "-q"]
-        code, out, _ = self.run(cmd, 300)
-        return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
-    
-    def crtsh(self, target: str) -> Set[str]:
-        """Certificate transparency logs"""
-        import urllib.request
+    def run_shell(self, cmd_str: str, timeout: int = 300, use_proxy: bool = None) -> Tuple[int, str, str]:
+        """Execute a shell command string"""
+        proxy = self.use_proxy if use_proxy is None else use_proxy
+        if proxy and is_installed("proxychains4"):
+            cmd_str = f"proxychains4 -q {cmd_str}"
         try:
-            url = f"https://crt.sh/?q=%25.{target}&output=json"
-            with urllib.request.urlopen(url, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
-                subs = set()
-                for entry in data:
-                    for name in entry.get("name_value", "").split('\n'):
-                        name = name.strip().lower()
-                        if name and '*' not in name:
-                            subs.add(name)
-                return subs
-        except:
-            return set()
+            result = subprocess.run(cmd_str, shell=True, timeout=timeout, capture_output=True, text=True)
+            return result.returncode, result.stdout, result.stderr
+        except subprocess.TimeoutExpired:
+            return -1, "", "Timeout"
+        except Exception as e:
+            return -1, "", str(e)
     
-    # ==================== DNS TOOLS ====================
-    
-    def dnsx(self, hosts: List[str]) -> Dict[str, List[str]]:
-        """Fast DNS resolution with all records"""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write('\n'.join(hosts))
-            temp = f.name
+    def run_tool(self, tool_name: str, context: Dict) -> Tuple[bool, Any]:
+        """
+        Run a tool from the YAML config.
+        context should contain: target, input_file, output_file, output_dir, threads, rate
+        Returns: (success, result_data)
+        """
+        if tool_name not in self.tools:
+            return False, f"Tool {tool_name} not defined in pipeline.yaml"
+        
+        tool_cfg = self.tools[tool_name]
+        
+        # Check if installed
+        check_bin = tool_cfg.get("installed_check", tool_name)
+        if not is_installed(check_bin):
+            return False, f"{check_bin} not installed"
+        
+        # Build command from template
+        cmd_template = tool_cfg.get("cmd", "")
+        timeout = tool_cfg.get("timeout", 300)
+        
+        # Merge tool options with context
+        options = tool_cfg.get("options", {})
+        ctx = {**options, **context, "threads": self.threads, "rate": self.rate_limit}
+        
+        # Replace placeholders
         try:
-            cmd = ["dnsx", "-l", temp, "-a", "-resp", "-json", "-silent", "-t", str(min(self.threads, 100))]
-            code, out, _ = self.run(cmd, 600)
-            resolved = {}
-            if code == 0:
-                for line in out.split('\n'):
-                    if line.strip():
-                        try:
-                            data = json.loads(line)
-                            host, ips = data.get("host", ""), data.get("a", [])
-                            if host and ips:
-                                resolved[host] = ips
-                        except:
-                            pass
-            return resolved
-        finally:
-            Path(temp).unlink(missing_ok=True)
-    
-    # ==================== PORT TOOLS ====================
-    
-    def naabu(self, hosts: List[str], top_ports: str = "1000") -> Dict[str, List[int]]:
-        """Fast port scanning with service detection"""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write('\n'.join(hosts))
-            temp = f.name
-        try:
-            cmd = [
-                "naabu", "-l", temp, "-json", "-silent",
-                "-top-ports", top_ports,
-                "-rate", str(self.rate_limit),
-                "-c", str(min(self.threads, 25)),
-                "-retries", "2"
-            ]
-            code, out, _ = self.run(cmd, 1800)
-            ports = {}
-            if code == 0:
-                for line in out.split('\n'):
-                    if line.strip():
-                        try:
-                            data = json.loads(line)
-                            host, port = data.get("host", ""), data.get("port", 0)
-                            if host and port:
-                                ports.setdefault(host, []).append(port)
-                        except:
-                            pass
-            return ports
-        finally:
-            Path(temp).unlink(missing_ok=True)
-    
-    # ==================== HTTP TOOLS ====================
-    
-    def httpx(self, targets: List[str]) -> Tuple[Set[str], Dict[str, List[str]]]:
-        """HTTP probing with tech detection, CDN detection, and screenshots"""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write('\n'.join(targets))
-            temp = f.name
-        try:
-            cmd = [
-                "httpx", "-l", temp, "-json", "-silent",
-                "-sc", "-title", "-td", "-cdn",  # status-code, title, tech-detect, cdn
-                "-follow-redirects",
-                "-rate-limit", str(self.rate_limit),
-                "-threads", str(min(self.threads, 50))
-            ]
-            code, out, _ = self.run(cmd, 1800)
-            live, techs = set(), {}
-            if code == 0:
-                for line in out.split('\n'):
-                    if line.strip():
-                        try:
-                            data = json.loads(line)
-                            url = data.get("url", "")
-                            if url:
-                                live.add(url)
-                                if data.get("tech"):
-                                    techs[url] = data["tech"]
-                        except:
-                            pass
-            return live, techs
-        finally:
-            Path(temp).unlink(missing_ok=True)
-    
-    # ==================== URL DISCOVERY TOOLS ====================
-    
-    def gau(self, target: str) -> Set[str]:
-        """Get All URLs from archives"""
-        cmd = ["gau", "--subs", "--threads", "5", target]
-        code, out, _ = self.run(cmd, 300)
-        return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
-    
-    def waybackurls(self, target: str) -> Set[str]:
-        """Wayback machine URLs"""
-        code, out, _ = self.run(["waybackurls"], 300, stdin_input=target)
-        return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
-    
-    def katana(self, targets: List[str], depth: int = 3) -> Set[str]:
-        """Modern crawler with JS parsing"""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write('\n'.join(targets))
-            temp = f.name
-        try:
-            cmd = [
-                "katana", "-list", temp, "-silent",
-                "-d", str(depth),
-                "-jc",  # JS crawling
-                "-iqp",  # Ignore query params
-                "-c", str(min(self.threads, 20)),
-                "-rl", str(self.rate_limit)
-            ]
-            code, out, _ = self.run(cmd, 900)
-            return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
-        finally:
-            Path(temp).unlink(missing_ok=True)
-    
-    def hakrawler(self, targets: List[str]) -> Set[str]:
-        """Fast crawling for endpoints"""
-        urls = set()
-        for target in targets[:5]:
-            cmd = ["hakrawler", "-d", "2", "-subs", "-u"]
-            code, out, _ = self.run(cmd, 300, stdin_input=target)
-            if code == 0:
-                urls.update(l.strip() for l in out.split('\n') if l.strip())
-        return urls
-    
-    # ==================== JS ANALYSIS TOOLS ====================
-    
-    def getjs(self, targets: List[str]) -> Set[str]:
-        """Extract JavaScript files"""
-        js_files = set()
-        for target in targets[:20]:
-            cmd = ["getJS", "--url", target, "--complete"]
-            code, out, _ = self.run(cmd, 120)
-            if code == 0:
-                js_files.update(l.strip() for l in out.split('\n') if l.strip() and '.js' in l)
-        return js_files
-    
-    # ==================== SCREENSHOT TOOLS ====================
-    
-    def gowitness(self, targets: List[str], output_dir: Path):
-        """Take screenshots using gowitness v3"""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write('\n'.join(targets))
-            temp = f.name
-        try:
-            ensure_dir(output_dir)
-            cmd = [
-                "gowitness", "scan", "file", "-f", temp,
-                "--screenshot-path", str(output_dir),
-                "--delay", "2",
-                "--threads", str(min(self.threads, 8))
-            ]
-            self.run(cmd, 3600)
-        finally:
-            Path(temp).unlink(missing_ok=True)
-    
-    # ==================== VULNERABILITY SCANNING ====================
-    
-    def nuclei(self, targets: List[str], output_file: Path, severity: str = "critical,high,medium") -> List[Dict]:
-        """Template-based vulnerability scanning"""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write('\n'.join(targets))
-            temp = f.name
-        try:
-            ensure_dir(output_file.parent)
-            cmd = [
-                "nuclei", "-l", temp,
-                "-o", str(output_file), "-jsonl", "-silent",
-                "-severity", severity,
-                "-rl", str(self.rate_limit),
-                "-c", str(min(self.threads, 25)),
-                "-nh"  # No update check
-            ]
-            self.run(cmd, 7200)
+            cmd = cmd_template.format(**ctx)
+        except KeyError as e:
+            return False, f"Missing placeholder: {e}"
+        
+        # Execute
+        code, stdout, stderr = self.run_shell(cmd, timeout)
+        
+        if code != 0 and not stdout:
+            return False, stderr or "Command failed"
+        
+        # Parse output based on type
+        output_type = tool_cfg.get("output", "stdout_lines")
+        
+        if output_type == "stdout_lines":
+            lines = [l.strip() for l in stdout.split('\n') if l.strip()]
+            return True, set(lines)
+        
+        elif output_type == "json_lines":
+            results = []
+            parser_name = tool_cfg.get("parser")
+            parser = self.parsers.get(parser_name, {}) if parser_name else {}
             
-            vulns = []
-            if output_file.exists():
-                with open(output_file) as f:
-                    for line in f:
-                        if line.strip():
-                            try:
-                                data = json.loads(line)
-                                vulns.append({
-                                    "host": data.get("host", ""),
-                                    "name": data.get("info", {}).get("name", ""),
-                                    "severity": data.get("info", {}).get("severity", "info"),
-                                    "template": data.get("template-id", ""),
-                                })
-                            except:
-                                pass
-            return vulns
-        finally:
-            Path(temp).unlink(missing_ok=True)
+            for line in stdout.split('\n'):
+                if line.strip():
+                    try:
+                        data = json.loads(line)
+                        results.append(data)
+                    except:
+                        pass
+            return True, results
+        
+        elif output_type == "file":
+            output_file = context.get("output_file")
+            if output_file and Path(output_file).exists():
+                return True, Path(output_file)
+            return True, None
+        
+        elif output_type == "directory":
+            return True, context.get("output_dir")
+        
+        return True, stdout
     
-    # ==================== CONTENT DISCOVERY ====================
-    
-    def ffuf(self, target: str, output_dir: Path, wordlist: Path):
-        """Fast web fuzzer"""
-        if not wordlist.exists():
-            return
-        output_file = output_dir / f"ffuf_{sanitize(target)}.json"
-        cmd = [
-            "ffuf", "-u", f"{target}/FUZZ", "-w", str(wordlist),
-            "-o", str(output_file), "-of", "json",
-            "-mc", "200,201,204,301,302,307,401,403,405",
-            "-t", str(min(self.threads, 50)),
-            "-rate", str(self.rate_limit),
-            "-s"  # Silent
-        ]
-        self.run(cmd, 600)
+    def parse_json_results(self, tool_name: str, results: List[Dict]) -> Any:
+        """Parse JSON results based on tool parser config"""
+        parser_name = self.tools.get(tool_name, {}).get("parser")
+        if not parser_name:
+            return results
+        
+        parser = self.parsers.get(parser_name, {})
+        
+        if parser_name == "dnsx":
+            # Returns {host: [ips]}
+            resolved = {}
+            for r in results:
+                host = r.get(parser.get("host_field", "host"), "")
+                ips = r.get(parser.get("data_field", "a"), [])
+                if host and ips:
+                    resolved[host] = ips
+            return resolved
+        
+        elif parser_name == "naabu":
+            # Returns {host: [ports]}
+            ports = {}
+            for r in results:
+                host = r.get(parser.get("host_field", "host"), "")
+                port = r.get(parser.get("port_field", "port"), 0)
+                if host and port:
+                    ports.setdefault(host, []).append(port)
+            return ports
+        
+        elif parser_name == "httpx":
+            # Returns (live_urls, technologies)
+            live = set()
+            techs = {}
+            for r in results:
+                url = r.get(parser.get("url_field", "url"), "")
+                if url:
+                    live.add(url)
+                    tech = r.get(parser.get("tech_field", "tech"), [])
+                    if tech:
+                        techs[url] = tech
+            return (live, techs)
+        
+        return results
 
-# ============== SCAN ENGINE ==============
+# ============== SCAN ENGINE (YAML-DRIVEN) ==============
 
 class MacaronEngine:
-    """Main scan orchestrator with beautiful progress UI"""
+    """Main scan orchestrator using YAML pipeline configuration"""
     
-    def __init__(self, use_proxy: bool = True, rate: int = 100, threads: int = 25, quiet: bool = False):
-        self.runner = ToolRunner(use_proxy, rate, threads)
+    def __init__(self, use_proxy: bool = True, rate: int = 100, threads: int = 25, quiet: bool = False, mode: str = "wide"):
+        self.pipeline_config = load_pipeline_config()
+        self.runner = ToolRunner(self.pipeline_config, use_proxy, rate, threads)
         self.quiet = quiet
         self.running = True
         self.notifier = DiscordNotifier()
+        self.rate = rate
+        self.threads = threads
         
         # Ensure directories
         for d in [DATA_DIR, CONFIG_DIR, STATE_DIR, LOGS_DIR, WORDLISTS_DIR]:
             ensure_dir(d)
+        
+        # Copy bundled pipeline.yaml to user config if not exists
+        if not PIPELINE_FILE.exists() and BUNDLED_PIPELINE.exists():
+            shutil.copy(BUNDLED_PIPELINE, PIPELINE_FILE)
         
         signal.signal(signal.SIGINT, self._handle_interrupt)
         signal.signal(signal.SIGTERM, self._handle_interrupt)
@@ -482,13 +484,13 @@ class MacaronEngine:
         if console:
             console.print("\n[yellow]⚠ Interrupt received, stopping gracefully...[/]")
     
-    def scan(self, targets: List[str], mode: Mode = Mode.WIDE) -> Dict:
-        """Execute scan with beautiful progress UI"""
+    def scan(self, targets: List[str], mode: str = "wide") -> Dict:
+        """Execute scan using YAML pipeline definition"""
         start = datetime.now()
-        self.notifier.scan_start(targets, mode.value)
+        self.notifier.scan_start(targets, mode)
         
         stats = {
-            "mode": mode.value,
+            "mode": mode,
             "targets": len(targets),
             "subdomains": 0,
             "live_hosts": 0,
@@ -499,38 +501,56 @@ class MacaronEngine:
         }
         
         if console and not self.quiet:
-            console.print(Panel(BANNER.format(version=VERSION), border_style="cyan", box=box.DOUBLE))
+            console.print(BANNER.format(version=VERSION))
+        
+        # Get pipeline from config
+        pipelines = self.pipeline_config.get("pipelines", {})
+        if mode not in pipelines:
+            if console:
+                console.print(f"[red]Pipeline '{mode}' not found in pipeline.yaml[/]")
+            return stats
+        
+        pipeline = pipelines[mode]
         
         for i, target in enumerate(targets):
             if not self.running:
                 break
             
-            ctx = ScanContext(
-                target=target,
-                mode=mode,
-                output_dir=DATA_DIR / sanitize(target),
-                use_proxy=self.runner.use_proxy
-            )
-            ensure_dir(ctx.output_dir)
+            # Context holds all discovered data
+            ctx = {
+                "target": target,
+                "subdomains": set(),
+                "resolved": {},
+                "ports": {},
+                "live_hosts": set(),
+                "urls": set(),
+                "js_files": set(),
+                "vulnerabilities": [],
+                "technologies": {},
+                "errors": [],
+                "output_dir": DATA_DIR / sanitize(target)
+            }
+            ensure_dir(ctx["output_dir"])
             
             if console and not self.quiet:
                 console.print(f"\n[bold cyan]━━━ Target {i+1}/{len(targets)}: {target} ━━━[/]\n")
             
-            # Run appropriate pipeline
-            if mode == Mode.WIDE:
-                ctx = self._pipeline_wide(ctx)
-            elif mode == Mode.NARROW:
-                ctx = self._pipeline_narrow(ctx)
-            else:  # FAST
-                ctx = self._pipeline_fast(ctx)
+            # Run each stage in the pipeline
+            for stage in pipeline.get("stages", []):
+                if not self.running:
+                    break
+                if not stage.get("enabled", True):
+                    continue
+                
+                ctx = self._run_pipeline_stage(stage, ctx)
             
             # Update stats
-            stats["subdomains"] += len(ctx.subdomains)
-            stats["live_hosts"] += len(ctx.live_hosts)
-            stats["ports"] += sum(len(p) for p in ctx.ports.values())
-            stats["urls"] += len(ctx.urls)
-            stats["vulnerabilities"] += len(ctx.vulnerabilities)
-            stats["errors"] += len(ctx.errors)
+            stats["subdomains"] += len(ctx.get("subdomains", []))
+            stats["live_hosts"] += len(ctx.get("live_hosts", []))
+            stats["ports"] += sum(len(p) for p in ctx.get("ports", {}).values())
+            stats["urls"] += len(ctx.get("urls", []))
+            stats["vulnerabilities"] += len(ctx.get("vulnerabilities", []))
+            stats["errors"] += len(ctx.get("errors", []))
             
             self._save_results(ctx)
         
@@ -542,17 +562,53 @@ class MacaronEngine:
         
         return stats
     
-    def _run_stage(self, name: str, emoji: str, color: str, tools: List[Tuple[str, callable]], ctx: ScanContext) -> Any:
-        """Run a stage with progress tracking"""
-        if not self.running:
-            return
+    def _run_pipeline_stage(self, stage: Dict, ctx: Dict) -> Dict:
+        """Run a single pipeline stage from YAML config"""
+        name = stage.get("name", "Unknown")
+        emoji = stage.get("emoji", "▶")
+        tools = stage.get("tools", [])
+        input_from = stage.get("input_from", "target")
+        output_to = stage.get("output_to", "")
+        limit = stage.get("limit", None)
+        
+        if not tools:
+            return ctx
+        
+        # Determine input data
+        if input_from == "target":
+            input_data = [ctx["target"]]
+        elif input_from == "subdomains":
+            input_data = list(ctx.get("subdomains", set()))
+        elif input_from == "resolved":
+            input_data = list(ctx.get("resolved", {}).keys())
+        elif input_from == "live_hosts":
+            input_data = list(ctx.get("live_hosts", set()))
+        elif input_from == "subdomains+ports":
+            # Combine subdomains with non-standard ports
+            input_data = list(ctx.get("subdomains", set()))
+            for host, ports in ctx.get("ports", {}).items():
+                for port in ports:
+                    if port not in (80, 443):
+                        input_data.append(f"{host}:{port}")
+        elif input_from == "urls":
+            input_data = list(ctx.get("urls", set()))
+        else:
+            input_data = [ctx["target"]]
+        
+        if not input_data:
+            return ctx
+        
+        # Apply limit
+        if limit and len(input_data) > limit:
+            input_data = input_data[:limit]
         
         results = {}
         
+        # Progress display
         if console and not self.quiet:
             with Progress(
                 SpinnerColumn(),
-                TextColumn(f"[{color}]{emoji} {name}[/]"),
+                TextColumn(f"[bold cyan]{emoji} {name}[/]"),
                 BarColumn(bar_width=30),
                 TaskProgressColumn(),
                 TextColumn("•"),
@@ -562,320 +618,208 @@ class MacaronEngine:
             ) as progress:
                 task = progress.add_task("", total=len(tools))
                 
-                for tool_name, tool_func in tools:
+                for tool_name in tools:
                     if not self.running:
                         break
-                    if not is_installed(tool_name.split()[0]):
-                        progress.advance(task)
-                        continue
                     
                     progress.update(task, description=f"[dim]{tool_name}[/]")
-                    try:
-                        result = tool_func()
+                    result = self._execute_tool(tool_name, input_data, ctx)
+                    if result is not None:
                         results[tool_name] = result
-                    except Exception as e:
-                        ctx.errors.append(f"{tool_name}: {e}")
                     progress.advance(task)
         else:
-            # Quiet mode - no progress bars
-            for tool_name, tool_func in tools:
+            for tool_name in tools:
                 if not self.running:
                     break
-                if not is_installed(tool_name.split()[0]):
-                    continue
-                try:
-                    results[tool_name] = tool_func()
-                except Exception as e:
-                    ctx.errors.append(f"{tool_name}: {e}")
+                result = self._execute_tool(tool_name, input_data, ctx)
+                if result is not None:
+                    results[tool_name] = result
         
-        return results
-    
-    # ==================== PIPELINES ====================
-    
-    def _pipeline_wide(self, ctx: ScanContext) -> ScanContext:
-        """Full infrastructure recon - optimized pipeline"""
+        # Merge results into context based on output_to
+        ctx = self._merge_results(results, output_to, ctx)
         
-        # Stage 1: Subdomain Discovery (parallel passive sources)
-        tools = [
-            ("subfinder", lambda: self.runner.subfinder(ctx.target)),
-            ("assetfinder", lambda: self.runner.assetfinder(ctx.target)),
-            ("findomain", lambda: self.runner.findomain(ctx.target)),
-            ("crt.sh", lambda: self.runner.crtsh(ctx.target)),
-            ("amass", lambda: self.runner.amass_passive(ctx.target)),
-        ]
-        results = self._run_stage("Subdomain Discovery", "🔍", Theme.STAGE_SUBDOMAIN, tools, ctx)
-        for r in results.values():
-            if r:
-                ctx.subdomains.update(r)
-        ctx.subdomains = {s.lower() for s in ctx.subdomains if ctx.target in s.lower()}
+        # Save intermediate results
+        self._save_stage_output(output_to, ctx)
         
-        if ctx.subdomains:
-            save_list(ctx.output_dir / "subdomains.txt", ctx.subdomains)
-            self._stage_done("subdomains", len(ctx.subdomains))
-        
-        if not self.running or not ctx.subdomains:
-            return ctx
-        
-        # Stage 2: DNS Resolution
-        tools = [("dnsx", lambda: self.runner.dnsx(list(ctx.subdomains)))]
-        results = self._run_stage("DNS Resolution", "📡", Theme.STAGE_DNS, tools, ctx)
-        ctx.resolved = results.get("dnsx", {})
-        if ctx.resolved:
-            save_list(ctx.output_dir / "resolved.txt", [f"{h}: {', '.join(ips)}" for h, ips in ctx.resolved.items()])
-            self._stage_done("resolved", len(ctx.resolved))
-        
-        if not self.running:
-            return ctx
-        
-        # Stage 3: Port Scanning (on resolved hosts)
-        hosts = list(ctx.resolved.keys()) if ctx.resolved else list(ctx.subdomains)[:100]
-        tools = [("naabu", lambda: self.runner.naabu(hosts, "1000"))]
-        results = self._run_stage("Port Scanning", "🔌", Theme.STAGE_PORT, tools, ctx)
-        ctx.ports = results.get("naabu", {})
-        if ctx.ports:
-            save_list(ctx.output_dir / "ports.txt", [f"{h}:{p}" for h, ports in ctx.ports.items() for p in ports])
-            self._stage_done("ports", sum(len(p) for p in ctx.ports.values()))
-        
-        if not self.running:
-            return ctx
-        
-        # Stage 4: HTTP Probing + Tech Detection (include non-standard ports)
-        probe_targets = set(ctx.subdomains)
-        for host, ports in ctx.ports.items():
-            for port in ports:
-                if port not in (80, 443):
-                    probe_targets.add(f"{host}:{port}")
-        
-        tools = [("httpx", lambda: self.runner.httpx(list(probe_targets)))]
-        results = self._run_stage("HTTP Probing", "🌐", Theme.STAGE_HTTP, tools, ctx)
-        live_result = results.get("httpx", (set(), {}))
-        ctx.live_hosts, ctx.technologies = live_result
-        if ctx.live_hosts:
-            save_list(ctx.output_dir / "live_hosts.txt", ctx.live_hosts)
-            save_list(ctx.output_dir / "technologies.txt", [f"{h}: {', '.join(t)}" for h, t in ctx.technologies.items()])
-            self._stage_done("live", len(ctx.live_hosts))
-        
-        if not self.running or not ctx.live_hosts:
-            return ctx
-        
-        # Stage 5: URL Discovery (passive + active)
-        clean_domain = strip_protocol(ctx.target)
-        tools = [
-            ("gau", lambda: self.runner.gau(clean_domain)),
-            ("waybackurls", lambda: self.runner.waybackurls(clean_domain)),
-            ("katana", lambda: self.runner.katana(list(ctx.live_hosts)[:20], depth=2)),
-        ]
-        results = self._run_stage("URL Discovery", "🔗", Theme.STAGE_URL, tools, ctx)
-        for r in results.values():
-            if r:
-                ctx.urls.update(r)
-        ctx.js_files = {u for u in ctx.urls if '.js' in u.lower() and not u.endswith('.json')}
-        if ctx.urls:
-            save_list(ctx.output_dir / "urls.txt", ctx.urls)
-            save_list(ctx.output_dir / "js_files.txt", ctx.js_files)
-            self._stage_done("urls", len(ctx.urls))
-        
-        if not self.running:
-            return ctx
-        
-        # Stage 6: JS Analysis
-        tools = [("getJS", lambda: self.runner.getjs(list(ctx.live_hosts)[:20]))]
-        results = self._run_stage("JS Analysis", "📜", Theme.STAGE_JS, tools, ctx)
-        more_js = results.get("getJS", set())
-        ctx.js_files.update(more_js)
-        if ctx.js_files:
-            save_list(ctx.output_dir / "js_files.txt", ctx.js_files)
-            self._stage_done("js_files", len(ctx.js_files))
-        
-        if not self.running:
-            return ctx
-        
-        # Stage 7: Screenshots
-        tools = [("gowitness", lambda: self.runner.gowitness(list(ctx.live_hosts)[:50], ctx.output_dir / "screenshots"))]
-        self._run_stage("Screenshots", "📸", Theme.STAGE_SCREEN, tools, ctx)
-        self._stage_done("screenshots", len(list((ctx.output_dir / "screenshots").glob("*.png"))) if (ctx.output_dir / "screenshots").exists() else 0)
-        
-        if not self.running:
-            return ctx
-        
-        # Stage 8: Vulnerability Scanning
-        tools = [("nuclei", lambda: self.runner.nuclei(list(ctx.live_hosts), ctx.output_dir / "nuclei.json"))]
-        results = self._run_stage("Vulnerability Scan", "🎯", Theme.STAGE_VULN, tools, ctx)
-        ctx.vulnerabilities = results.get("nuclei", [])
-        if ctx.vulnerabilities:
-            self._stage_done("vulns", len(ctx.vulnerabilities), is_vuln=True)
-            for v in ctx.vulnerabilities:
-                if v.get("severity") in ("critical", "high"):
-                    self.notifier.vulnerability(v["name"], v["severity"], v["host"])
+        # Print stage completion
+        count = self._get_count(output_to, ctx)
+        if count > 0 and console and not self.quiet:
+            color = "red" if output_to == "vulnerabilities" else "green"
+            console.print(f"  [{color}]✓[/] {output_to}: [bold]{count}[/]")
         
         return ctx
     
-    def _pipeline_narrow(self, ctx: ScanContext) -> ScanContext:
-        """Application-focused recon"""
-        ctx.subdomains.add(ctx.target)
+    def _execute_tool(self, tool_name: str, input_data: List[str], ctx: Dict) -> Any:
+        """Execute a single tool from YAML config"""
+        tool_cfg = self.pipeline_config.get("tools", {}).get(tool_name, {})
+        if not tool_cfg:
+            return None
         
-        # DNS check
-        tools = [("dnsx", lambda: self.runner.dnsx([ctx.target]))]
-        results = self._run_stage("DNS Validation", "📡", Theme.STAGE_DNS, tools, ctx)
-        ctx.resolved = results.get("dnsx", {})
+        input_type = tool_cfg.get("input", "target")
         
-        # Light port scan (web ports only)
-        if is_installed("naabu"):
+        # Create temp file if needed
+        temp_file = None
+        if input_type == "file":
             with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write(ctx.target)
-                temp = f.name
-            try:
-                cmd = ["naabu", "-l", temp, "-json", "-silent", "-p", "80,443,8080,8443,8000,3000,5000,9000"]
-                code, out, _ = run_cmd(cmd, 300, self.runner.use_proxy)
-                if code == 0:
-                    for line in out.split('\n'):
-                        if line.strip():
-                            try:
-                                data = json.loads(line)
-                                h, p = data.get("host", ""), data.get("port", 0)
-                                if h and p:
-                                    ctx.ports.setdefault(h, []).append(p)
-                            except:
-                                pass
-            finally:
-                Path(temp).unlink(missing_ok=True)
+                f.write('\n'.join(input_data))
+                temp_file = f.name
         
-        # HTTP probe
-        tools = [("httpx", lambda: self.runner.httpx([ctx.target]))]
-        results = self._run_stage("HTTP Probing", "🌐", Theme.STAGE_HTTP, tools, ctx)
-        live_result = results.get("httpx", (set(), {}))
-        ctx.live_hosts, ctx.technologies = live_result
-        if ctx.live_hosts:
-            save_list(ctx.output_dir / "live_hosts.txt", ctx.live_hosts)
-            self._stage_done("live", len(ctx.live_hosts))
+        output_file = None
+        if tool_cfg.get("output") in ("json_lines", "file"):
+            output_file = str(ctx["output_dir"] / f"{tool_name}_output.json")
         
-        if not self.running or not ctx.live_hosts:
-            return ctx
-        
-        # Deep crawling
-        tools = [
-            ("katana", lambda: self.runner.katana(list(ctx.live_hosts), depth=4)),
-            ("hakrawler", lambda: self.runner.hakrawler(list(ctx.live_hosts))),
-        ]
-        results = self._run_stage("Deep Crawling", "🕷️", Theme.STAGE_URL, tools, ctx)
-        for r in results.values():
-            if r:
-                ctx.urls.update(r)
-        
-        # URL discovery
-        clean = strip_protocol(ctx.target)
-        tools = [
-            ("gau", lambda: self.runner.gau(clean)),
-            ("waybackurls", lambda: self.runner.waybackurls(clean)),
-        ]
-        results = self._run_stage("URL Archives", "🔗", Theme.STAGE_URL, tools, ctx)
-        for r in results.values():
-            if r:
-                ctx.urls.update(r)
-        
-        ctx.js_files = {u for u in ctx.urls if '.js' in u}
-        if ctx.urls:
-            save_list(ctx.output_dir / "urls.txt", ctx.urls)
-            save_list(ctx.output_dir / "js_files.txt", ctx.js_files)
-            self._stage_done("urls", len(ctx.urls))
-        
-        # JS Analysis
-        tools = [("getJS", lambda: self.runner.getjs(list(ctx.live_hosts)))]
-        results = self._run_stage("JS Analysis", "📜", Theme.STAGE_JS, tools, ctx)
-        more_js = results.get("getJS", set())
-        ctx.js_files.update(more_js)
-        
-        # Content discovery
-        wordlist = WORDLISTS_DIR / "common.txt"
-        if wordlist.exists() and is_installed("ffuf"):
-            ensure_dir(ctx.output_dir / "content")
-            for target in list(ctx.live_hosts)[:3]:
-                self.runner.ffuf(target, ctx.output_dir / "content", wordlist)
-        
-        # Screenshots
-        tools = [("gowitness", lambda: self.runner.gowitness(list(ctx.live_hosts), ctx.output_dir / "screenshots"))]
-        self._run_stage("Screenshots", "📸", Theme.STAGE_SCREEN, tools, ctx)
-        
-        # Vuln scan (focused)
-        tools = [("nuclei", lambda: self.runner.nuclei(list(ctx.live_hosts), ctx.output_dir / "nuclei.json", "critical,high,medium"))]
-        results = self._run_stage("Vulnerability Scan", "🎯", Theme.STAGE_VULN, tools, ctx)
-        ctx.vulnerabilities = results.get("nuclei", [])
-        if ctx.vulnerabilities:
-            self._stage_done("vulns", len(ctx.vulnerabilities), is_vuln=True)
-        
-        return ctx
-    
-    def _pipeline_fast(self, ctx: ScanContext) -> ScanContext:
-        """Quick scan - minimal tools, maximum speed"""
-        
-        # Fast subdomain enum (only subfinder + crt.sh)
-        tools = [
-            ("subfinder", lambda: self.runner.subfinder(ctx.target)),
-            ("crt.sh", lambda: self.runner.crtsh(ctx.target)),
-        ]
-        results = self._run_stage("Quick Subdomain Scan", "🔍", Theme.STAGE_SUBDOMAIN, tools, ctx)
-        for r in results.values():
-            if r:
-                ctx.subdomains.update(r)
-        ctx.subdomains = {s.lower() for s in ctx.subdomains if ctx.target in s.lower()}
-        if ctx.subdomains:
-            save_list(ctx.output_dir / "subdomains.txt", ctx.subdomains)
-            self._stage_done("subdomains", len(ctx.subdomains))
-        
-        if not ctx.subdomains:
-            return ctx
-        
-        # HTTP probe only (skip DNS and ports)
-        tools = [("httpx", lambda: self.runner.httpx(list(ctx.subdomains)[:100]))]
-        results = self._run_stage("HTTP Probing", "🌐", Theme.STAGE_HTTP, tools, ctx)
-        live_result = results.get("httpx", (set(), {}))
-        ctx.live_hosts, ctx.technologies = live_result
-        if ctx.live_hosts:
-            save_list(ctx.output_dir / "live_hosts.txt", ctx.live_hosts)
-            self._stage_done("live", len(ctx.live_hosts))
-        
-        if not ctx.live_hosts:
-            return ctx
-        
-        # Quick vuln scan (critical + high only)
-        tools = [("nuclei", lambda: self.runner.nuclei(list(ctx.live_hosts)[:50], ctx.output_dir / "nuclei.json", "critical,high"))]
-        results = self._run_stage("Quick Vuln Scan", "🎯", Theme.STAGE_VULN, tools, ctx)
-        ctx.vulnerabilities = results.get("nuclei", [])
-        if ctx.vulnerabilities:
-            self._stage_done("vulns", len(ctx.vulnerabilities), is_vuln=True)
-        
-        return ctx
-    
-    def _stage_done(self, name: str, count: int, is_vuln: bool = False):
-        """Print stage completion message"""
-        if console and not self.quiet:
-            color = "red" if is_vuln and count > 0 else "green"
-            console.print(f"  [{color}]✓[/] {name}: [bold]{count}[/]")
-    
-    def _save_results(self, ctx: ScanContext):
-        """Save scan summary"""
-        summary = {
-            "target": ctx.target,
-            "mode": ctx.mode.value,
-            "scanned_at": get_timestamp(),
-            "duration": str(datetime.now() - ctx.start_time).split('.')[0],
-            "stats": {
-                "subdomains": len(ctx.subdomains),
-                "resolved": len(ctx.resolved),
-                "live_hosts": len(ctx.live_hosts),
-                "ports": sum(len(p) for p in ctx.ports.values()),
-                "urls": len(ctx.urls),
-                "js_files": len(ctx.js_files),
-                "vulnerabilities": len(ctx.vulnerabilities)
-            },
-            "vulnerabilities": ctx.vulnerabilities,
-            "errors": ctx.errors
+        # Build context for tool execution
+        tool_ctx = {
+            "target": input_data[0] if input_data else ctx["target"],
+            "input_file": temp_file or "",
+            "output_file": output_file or "",
+            "output_dir": str(ctx["output_dir"] / tool_name),
+            "wordlist": str(Path(tool_cfg.get("options", {}).get("wordlist", "~/.macaron/wordlists/common.txt")).expanduser()),
+            "severity": tool_cfg.get("options", {}).get("severity", "critical,high,medium"),
+            "depth": tool_cfg.get("options", {}).get("depth", 3),
         }
-        with open(ctx.output_dir / "summary.json", 'w') as f:
+        
+        try:
+            success, result = self.runner.run_tool(tool_name, tool_ctx)
+            
+            if not success:
+                ctx["errors"].append(f"{tool_name}: {result}")
+                return None
+            
+            # Parse JSON results if needed
+            if tool_cfg.get("output") == "json_lines" and isinstance(result, list):
+                return self.runner.parse_json_results(tool_name, result)
+            
+            return result
+            
+        except Exception as e:
+            ctx["errors"].append(f"{tool_name}: {e}")
+            return None
+        finally:
+            if temp_file:
+                Path(temp_file).unlink(missing_ok=True)
+    
+    def _merge_results(self, results: Dict, output_to: str, ctx: Dict) -> Dict:
+        """Merge tool results into context"""
+        for tool_name, result in results.items():
+            if result is None:
+                continue
+            
+            if output_to == "subdomains":
+                if isinstance(result, (set, list)):
+                    # Filter to only include subdomains of target
+                    target = ctx["target"]
+                    ctx["subdomains"].update(s.lower() for s in result if target in s.lower())
+            
+            elif output_to == "resolved":
+                if isinstance(result, dict):
+                    ctx["resolved"].update(result)
+            
+            elif output_to == "ports":
+                if isinstance(result, dict):
+                    for host, ports in result.items():
+                        ctx["ports"].setdefault(host, []).extend(ports)
+            
+            elif output_to == "live_hosts":
+                if isinstance(result, tuple):  # httpx returns (live, techs)
+                    live, techs = result
+                    ctx["live_hosts"].update(live)
+                    ctx["technologies"].update(techs)
+                elif isinstance(result, (set, list)):
+                    ctx["live_hosts"].update(result)
+            
+            elif output_to == "urls":
+                if isinstance(result, (set, list)):
+                    ctx["urls"].update(result)
+            
+            elif output_to == "js_files":
+                if isinstance(result, (set, list)):
+                    ctx["js_files"].update(r for r in result if '.js' in r.lower())
+            
+            elif output_to == "vulnerabilities":
+                if isinstance(result, list):
+                    ctx["vulnerabilities"].extend(result)
+                # Also read from nuclei output file
+                vuln_file = ctx["output_dir"] / "nuclei.json"
+                if vuln_file.exists():
+                    with open(vuln_file) as f:
+                        for line in f:
+                            if line.strip():
+                                try:
+                                    v = json.loads(line)
+                                    ctx["vulnerabilities"].append({
+                                        "host": v.get("host", ""),
+                                        "name": v.get("info", {}).get("name", ""),
+                                        "severity": v.get("info", {}).get("severity", "info"),
+                                        "template": v.get("template-id", ""),
+                                    })
+                                except:
+                                    pass
+        
+        return ctx
+    
+    def _save_stage_output(self, output_to: str, ctx: Dict):
+        """Save stage output to files"""
+        output_dir = ctx["output_dir"]
+        
+        if output_to == "subdomains" and ctx.get("subdomains"):
+            save_list(output_dir / "subdomains.txt", ctx["subdomains"])
+        elif output_to == "resolved" and ctx.get("resolved"):
+            save_list(output_dir / "resolved.txt", [f"{h}: {', '.join(map(str, ips))}" for h, ips in ctx["resolved"].items()])
+        elif output_to == "ports" and ctx.get("ports"):
+            save_list(output_dir / "ports.txt", [f"{h}:{p}" for h, ports in ctx["ports"].items() for p in ports])
+        elif output_to == "live_hosts" and ctx.get("live_hosts"):
+            save_list(output_dir / "live_hosts.txt", ctx["live_hosts"])
+            if ctx.get("technologies"):
+                save_list(output_dir / "technologies.txt", [f"{h}: {', '.join(t)}" for h, t in ctx["technologies"].items()])
+        elif output_to == "urls" and ctx.get("urls"):
+            save_list(output_dir / "urls.txt", ctx["urls"])
+        elif output_to == "js_files" and ctx.get("js_files"):
+            save_list(output_dir / "js_files.txt", ctx["js_files"])
+    
+    def _get_count(self, output_to: str, ctx: Dict) -> int:
+        """Get count of items in output"""
+        if output_to == "subdomains":
+            return len(ctx.get("subdomains", []))
+        elif output_to == "resolved":
+            return len(ctx.get("resolved", {}))
+        elif output_to == "ports":
+            return sum(len(p) for p in ctx.get("ports", {}).values())
+        elif output_to == "live_hosts":
+            return len(ctx.get("live_hosts", []))
+        elif output_to == "urls":
+            return len(ctx.get("urls", []))
+        elif output_to == "js_files":
+            return len(ctx.get("js_files", []))
+        elif output_to == "vulnerabilities":
+            return len(ctx.get("vulnerabilities", []))
+        elif output_to == "screenshots":
+            ss_dir = ctx["output_dir"] / "gowitness"
+            return len(list(ss_dir.glob("*.png"))) if ss_dir.exists() else 0
+        return 0
+    
+    def _save_results(self, ctx: Dict):
+        """Save final scan summary"""
+        summary = {
+            "target": ctx["target"],
+            "scanned_at": get_timestamp(),
+            "stats": {
+                "subdomains": len(ctx.get("subdomains", [])),
+                "resolved": len(ctx.get("resolved", {})),
+                "live_hosts": len(ctx.get("live_hosts", [])),
+                "ports": sum(len(p) for p in ctx.get("ports", {}).values()),
+                "urls": len(ctx.get("urls", [])),
+                "js_files": len(ctx.get("js_files", [])),
+                "vulnerabilities": len(ctx.get("vulnerabilities", []))
+            },
+            "vulnerabilities": ctx.get("vulnerabilities", []),
+            "errors": ctx.get("errors", [])
+        }
+        with open(ctx["output_dir"] / "summary.json", 'w') as f:
             json.dump(summary, f, indent=2)
     
     def _print_summary(self, stats: Dict):
-        """Print beautiful scan summary"""
+        """Print scan summary"""
         if not console or self.quiet:
             return
         
@@ -895,7 +839,8 @@ class MacaronEngine:
         
         console.print()
         console.print(table)
-        console.print(f"\n[dim]Results saved to: {DATA_DIR}[/]")
+        console.print(f"\n[dim]Results: {DATA_DIR}[/]")
+        console.print(f"[dim]Config:  {PIPELINE_FILE}[/]")
 
 # ============== DISCORD NOTIFIER ==============
 
@@ -952,13 +897,15 @@ def cmd_scan(args):
         console.print("[red]✗ No targets provided[/]") if console else print("No targets")
         return 1
     
-    # Mode selection
-    if args.fast:
-        mode = Mode.FAST
+    # Mode selection (now supports custom modes from pipeline.yaml)
+    if args.mode:
+        mode = args.mode
+    elif args.fast:
+        mode = "fast"
     elif args.narrow:
-        mode = Mode.NARROW
+        mode = "narrow"
     else:
-        mode = Mode.WIDE
+        mode = "wide"
     
     # Rate limiting
     rate = 10 if args.slow else (args.rate or 100)
@@ -980,7 +927,7 @@ def cmd_status(args):
         print("Status requires rich library")
         return 1
     
-    console.print(Panel(BANNER.format(version=VERSION), border_style="cyan", box=box.DOUBLE))
+    console.print(BANNER.format(version=VERSION))
     
     # Data summary
     if DATA_DIR.exists():
@@ -1209,17 +1156,26 @@ def cmd_install(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="macaron",
-        description="Macaron v2 - Security Reconnaissance Platform",
+        description="Macaron v2.1 - YAML-Configured Security Reconnaissance",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  macaron -s example.com              Wide scan
-  macaron -s app.com -n               Narrow scan  
-  macaron -s target.com -f            Fast scan
-  macaron -s target.com --slow        Slow mode (ISP friendly)
+  macaron -s example.com              Wide scan (default)
+  macaron -s app.com -n               Narrow scan (app-focused)
+  macaron -s target.com -f            Fast scan (quick wins)
+  macaron -s target.com -m custom     Custom pipeline from YAML
+  macaron -s target.com --slow        Slow mode (10 req/s)
   macaron -S                          Show status
   macaron -L                          List tools
   macaron -R -d example.com           Show results
+  macaron -P                          Show pipeline config path
+
+Pipeline Configuration:
+  Edit ~/.macaron/config/pipeline.yaml to customize:
+  - Tool commands and options
+  - Scan stages and order
+  - Rate limits and timeouts
+  - Create custom scan modes
         """
     )
     
@@ -1231,8 +1187,10 @@ Examples:
     parser.add_argument("-E", "--export", action="store_true", help="Export results")
     parser.add_argument("-I", "--install", action="store_true", help="Install recon tools (sudo)")
     parser.add_argument("-C", "--config", action="store_true", help="Show config")
+    parser.add_argument("-P", "--pipeline", action="store_true", help="Show pipeline.yaml path")
     
     # Scan options
+    parser.add_argument("-m", "--mode", metavar="MODE", help="Scan mode (wide/narrow/fast/custom)")
     parser.add_argument("-f", "--fast", action="store_true", help="Fast mode (minimal tools)")
     parser.add_argument("-n", "--narrow", action="store_true", help="Narrow mode (app-focused)")
     parser.add_argument("-F", "--file", metavar="FILE", help="Targets from file")
@@ -1271,6 +1229,21 @@ Examples:
         return cmd_show(args)
     elif args.list_tools:
         return cmd_tools(args)
+    elif args.pipeline:
+        # Show pipeline config path
+        ensure_dir(CONFIG_DIR)
+        if not PIPELINE_FILE.exists() and BUNDLED_PIPELINE.exists():
+            shutil.copy(BUNDLED_PIPELINE, PIPELINE_FILE)
+        if console:
+            console.print(f"\n[bold cyan]Pipeline Config:[/] {PIPELINE_FILE}")
+            console.print(f"\n[dim]Edit this file to customize tool commands, stages, and modes.[/]")
+            if PIPELINE_FILE.exists():
+                console.print(f"\n[green]✓ Config exists[/]")
+            else:
+                console.print(f"\n[yellow]! Config will be created on first scan[/]")
+        else:
+            print(f"Pipeline config: {PIPELINE_FILE}")
+        return 0
     elif args.export:
         return cmd_export(args)
     elif args.install:
