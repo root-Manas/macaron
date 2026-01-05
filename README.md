@@ -1,3 +1,5 @@
+![Macaron Banner](assets/macaron-banner.png)
+
 # Macaron v2.1 - Security Reconnaissance Platform
 
 **A powerful CLI-based security reconnaissance and asset discovery platform**
