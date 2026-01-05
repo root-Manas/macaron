@@ -517,9 +517,10 @@ class MacaronEngine:
                 break
             
             # Context holds all discovered data
+            # Always include target itself in subdomains
             ctx = {
                 "target": target,
-                "subdomains": set(),
+                "subdomains": {target},  # Include target domain by default
                 "resolved": {},
                 "ports": {},
                 "live_hosts": set(),
