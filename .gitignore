@@ -1,12 +1,8 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -28,34 +24,36 @@ wheels/
 venv/
 ENV/
 env/
-.venv/
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
+
+# Environment
+.env
+.env.local
+
+# Data and logs (created at runtime)
+data/
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
-logs/
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Local data
-data/
-state/
-*.pid
-
-# Config with secrets
-config/config.local.yaml
-config/config.local.json
-.env
-*.env
-
-# Test outputs
-test_output/
-*.tmp
+# Alembic
+alembic/versions/*.pyc
