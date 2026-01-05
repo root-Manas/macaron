@@ -4,13 +4,12 @@ Discord Webhook Notifier for Security Recon Platform
 import asyncio
 import aiohttp
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 import logging
 
-import sys
-sys.path.insert(0, str(__file__).rsplit('backend', 1)[0])
+# Proper imports without sys.path manipulation
 from shared.types import Config, NotificationType, Severity, Vulnerability
 
 logger = logging.getLogger(__name__)
@@ -140,7 +139,7 @@ class DiscordNotifier:
                 {"name": "Targets", "value": "\n".join(targets[:10]) + (f"\n+{len(targets)-10} more" if len(targets) > 10 else ""), "inline": True},
                 {"name": "Modules", "value": ", ".join(modules), "inline": True},
             ],
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             footer="Security Recon Platform"
         )
         await self._send_webhook(embeds=[embed])
@@ -161,7 +160,7 @@ class DiscordNotifier:
                 {"name": "Open Ports", "value": str(stats.get("ports", 0)), "inline": True},
                 {"name": "Vulnerabilities", "value": str(stats.get("vulnerabilities", 0)), "inline": True},
             ],
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             footer="Security Recon Platform"
         )
         await self._send_webhook(embeds=[embed])
@@ -182,7 +181,7 @@ class DiscordNotifier:
                 fields=[
                     {"name": "Count", "value": f"{len(batch)} ({i+1}-{i+len(batch)} of {len(subdomains)})", "inline": True},
                 ],
-                timestamp=datetime.utcnow().isoformat(),
+                timestamp=datetime.now(timezone.utc).isoformat(),
                 footer="Security Recon Platform"
             )
             await self._send_webhook(embeds=[embed])
@@ -223,7 +222,7 @@ class DiscordNotifier:
             description=vuln.description[:500] if vuln.description else "",
             color=color,
             fields=fields,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             footer="Security Recon Platform"
         )
         
@@ -244,7 +243,7 @@ class DiscordNotifier:
             fields=[
                 {"name": "Context", "value": context or "Unknown", "inline": True},
             ] if context else [],
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             footer="Security Recon Platform"
         )
         await self._send_webhook(embeds=[embed])
@@ -255,7 +254,7 @@ class DiscordNotifier:
             title=title,
             description=message[:4096],
             color=self.COLORS.get(severity, 0x7289DA),
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             footer="Security Recon Platform"
         )
         await self._send_webhook(embeds=[embed])
@@ -267,46 +266,35 @@ class SyncDiscordNotifier:
     
     def __init__(self, webhook_url: str = None):
         self._notifier = DiscordNotifier(webhook_url)
-        self._loop = None
     
-    def _get_loop(self):
-        if self._loop is None or self._loop.is_closed():
-            try:
-                self._loop = asyncio.get_event_loop()
-            except RuntimeError:
-                self._loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._loop)
-        return self._loop
+    def _run_async(self, coro):
+        """Run async coroutine safely"""
+        try:
+            # Use asyncio.run() - creates new event loop each time (safe)
+            asyncio.run(coro)
+        except RuntimeError as e:
+            # If there's already a running loop, log warning
+            logger.warning(f"Could not send notification: {e}")
+        except Exception as e:
+            logger.error(f"Notification failed: {e}")
     
     def notify_scan_start(self, targets: List[str], modules: List[str]):
-        self._get_loop().run_until_complete(
-            self._notifier.notify_scan_start(targets, modules)
-        )
+        self._run_async(self._notifier.notify_scan_start(targets, modules))
     
     def notify_scan_complete(self, stats: Dict[str, Any]):
-        self._get_loop().run_until_complete(
-            self._notifier.notify_scan_complete(stats)
-        )
+        self._run_async(self._notifier.notify_scan_complete(stats))
     
     def notify_new_subdomains(self, domain: str, subdomains: List[str]):
-        self._get_loop().run_until_complete(
-            self._notifier.notify_new_subdomains(domain, subdomains)
-        )
+        self._run_async(self._notifier.notify_new_subdomains(domain, subdomains))
     
     def notify_vulnerability(self, vuln: Vulnerability):
-        self._get_loop().run_until_complete(
-            self._notifier.notify_vulnerability(vuln)
-        )
+        self._run_async(self._notifier.notify_vulnerability(vuln))
     
     def notify_error(self, error: str, context: str = ""):
-        self._get_loop().run_until_complete(
-            self._notifier.notify_error(error, context)
-        )
+        self._run_async(self._notifier.notify_error(error, context))
     
     def send_custom(self, title: str, message: str, severity: Severity = Severity.INFO):
-        self._get_loop().run_until_complete(
-            self._notifier.send_custom(title, message, severity)
-        )
+        self._run_async(self._notifier.send_custom(title, message, severity))
     
     def close(self):
-        self._get_loop().run_until_complete(self._notifier.close())
+        self._run_async(self._notifier.close())

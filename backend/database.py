@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, JSON, ForeignKey, Enum, Index, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import enum
 
 from config import settings
@@ -45,10 +45,10 @@ class Target(Base):
     value = Column(String, unique=True, index=True, nullable=False)
     type = Column(Enum(TargetType), nullable=False)
     program_name = Column(String, index=True)
-    scope = Column(Boolean, default=True, index=True)  # Added index for filtering
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)  # Added index for time-based queries
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    metadata = Column(JSON, default={})
+    scope = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    metadata = Column(JSON, default=dict)  # Fixed: use callable, not mutable default
     
     # Relationships with CASCADE delete
     scans = relationship("Scan", back_populates="target", cascade="all, delete-orphan", passive_deletes=True)
@@ -67,9 +67,9 @@ class ScanProfile(Base):
     name = Column(String, unique=True, nullable=False, index=True)
     description = Column(Text)
     tools_config = Column(JSON, nullable=False)
-    is_active = Column(Boolean, default=True, index=True)  # Added index for filtering active profiles
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     scans = relationship("Scan", back_populates="profile", cascade="all, delete-orphan", passive_deletes=True)
 
@@ -79,13 +79,13 @@ class Scan(Base):
     id = Column(Integer, primary_key=True, index=True)
     target_id = Column(Integer, ForeignKey("targets.id", ondelete="CASCADE"), nullable=False, index=True)
     profile_id = Column(Integer, ForeignKey("scan_profiles.id", ondelete="CASCADE"), nullable=False, index=True)
-    status = Column(Enum(ScanStatus), default=ScanStatus.PENDING, index=True)  # Added index for status filtering
-    started_at = Column(DateTime, index=True)  # Added index for time-based queries
+    status = Column(Enum(ScanStatus), default=ScanStatus.PENDING, index=True)
+    started_at = Column(DateTime, index=True)
     completed_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     progress = Column(Integer, default=0)
     current_tool = Column(String)
-    results_summary = Column(JSON, default={})
+    results_summary = Column(JSON, default=dict)  # Fixed: use callable
     error_message = Column(Text)
     
     target = relationship("Target", back_populates="scans")
@@ -127,18 +127,18 @@ class Asset(Base):
     value = Column(String, index=True, nullable=False)  # Made nullable=False for data integrity
     source_tool = Column(String, index=True)  # Added index for tool filtering
     confidence = Column(Integer, default=100)
-    is_alive = Column(Boolean, default=True, index=True)  # Added index for filtering live assets
+    is_alive = Column(Boolean, default=True, index=True)
     http_status = Column(Integer)
-    technologies = Column(JSON, default=[])
-    vulnerability_score = Column(Integer, default=0, index=True)  # Added index for sorting by risk
-    metadata = Column(JSON, default={})
+    technologies = Column(JSON, default=list)  # Fixed: use callable
+    vulnerability_score = Column(Integer, default=0, index=True)
+    metadata = Column(JSON, default=dict)  # Fixed: use callable
     
-    # Added first_seen/last_seen tracking (best practice from web research)
-    first_seen = Column(DateTime, default=datetime.utcnow, nullable=False)
-    last_seen = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
+    # First/last seen tracking
+    first_seen = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    last_seen = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False, index=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     target = relationship("Target", back_populates="assets")
     endpoints = relationship("Endpoint", back_populates="asset", cascade="all, delete-orphan", passive_deletes=True)
@@ -163,15 +163,15 @@ class Endpoint(Base):
     method = Column(String, default="GET")  # HTTP method
     status_code = Column(Integer)
     response_length = Column(Integer)
-    parameters = Column(JSON, default=[])  # Extracted parameters
-    headers = Column(JSON, default={})
+    parameters = Column(JSON, default=list)  # Fixed: use callable
+    headers = Column(JSON, default=dict)  # Fixed: use callable
     screenshot_path = Column(String)
     
     # Tracking
-    first_seen = Column(DateTime, default=datetime.utcnow, nullable=False)
-    last_seen = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    first_seen = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    last_seen = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     asset = relationship("Asset", back_populates="endpoints")
     vulnerabilities = relationship("Vulnerability", back_populates="endpoint", cascade="all, delete-orphan", passive_deletes=True)
@@ -206,20 +206,20 @@ class Vulnerability(Base):
     
     # References and evidence
     cvss_score = Column(Float)  # Added CVSS scoring
-    cve_id = Column(String, index=True)  # CVE identifier if applicable
-    references = Column(JSON, default=[])
-    evidence_path = Column(String)  # Path to screenshots/proof
-    tool_source = Column(String, index=True)  # Tool that found it
+    cve_id = Column(String, index=True)
+    references = Column(JSON, default=list)  # Fixed: use callable
+    evidence_path = Column(String)
+    tool_source = Column(String, index=True)
     
     # Metadata
     matcher_name = Column(String)
-    extracted_results = Column(JSON, default=[])
+    extracted_results = Column(JSON, default=list)  # Fixed: use callable
     curl_command = Column(Text)
-    metadata = Column(JSON, default={})
+    metadata = Column(JSON, default=dict)  # Fixed: use callable
     
     # Timestamps
-    discovered_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    discovered_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     reported_at = Column(DateTime)
     fixed_at = Column(DateTime)
     
@@ -245,10 +245,10 @@ class CronJob(Base):
     cron_expression = Column(String, nullable=False)
     target_id = Column(Integer, ForeignKey("targets.id", ondelete="SET NULL"))  # SET NULL instead of CASCADE
     profile_id = Column(Integer, ForeignKey("scan_profiles.id", ondelete="SET NULL"))  # SET NULL instead of CASCADE
-    is_active = Column(Boolean, default=True, index=True)  # Added index for filtering
-    last_run = Column(DateTime, index=True)  # Added index for time-based queries
-    next_run = Column(DateTime, index=True)  # Added index for scheduling
-    created_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True, index=True)
+    last_run = Column(DateTime, index=True)
+    next_run = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     __table_args__ = (
         Index('idx_cronjob_active_nextrun', 'is_active', 'next_run'),
@@ -260,7 +260,13 @@ class Notification(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
     message = Column(Text, nullable=False)
-    level = Column(String, default="info", index=True)  # Added index for filtering by level
-    sent_at = Column(DateTime, default=datetime.utcnow, index=True)  # Added index for time-based queries
-    discord_sent = Column(Boolean, default=False, index=True)  # Added index for filtering
-    metadata = Column(JSON, default={})
+    level = Column(String, default="info", index=True)
+    sent_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    discord_sent = Column(Boolean, default=False, index=True)
+    metadata = Column(JSON, default=dict)  # Fixed: use callable
+    
+    __table_args__ = (
+        Index('idx_notification_level_sent', 'level', 'sent_at'),
+        # Partial index for unsent notifications (best practice from web research)
+        Index('idx_notification_unsent', 'discord_sent', postgresql_where=(discord_sent == False)),
+    )

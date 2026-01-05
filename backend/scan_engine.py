@@ -9,17 +9,16 @@ import tempfile
 import shutil
 import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Callable, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
 import signal
-import sys
 import re
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Proper imports without sys.path manipulation
 from shared.types import Config, ScanStatus, ScanState, Subdomain, Port, HttpEndpoint, Vulnerability, Severity
 from shared.utils import (
     get_timestamp, ensure_dir, deduplicate_subdomains, check_tool_installed,
