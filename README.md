@@ -1,6 +1,6 @@
-# Macaron 🍪
+# Macaron v2 🍪
 
-A single unified CLI tool for automated security reconnaissance. Chains all recon tools efficiently, filters targets for manual testing, and sends Discord notifications.
+A beautiful, fast security reconnaissance CLI with modern UI. Chains 30+ recon tools with optimized pipelines, progress bars, and Discord notifications.
 
 ```
 ███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗
@@ -9,156 +9,157 @@ A single unified CLI tool for automated security reconnaissance. Chains all reco
 ██║╚██╔╝██║██╔══██║██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║
 ██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║
 ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
+                    v2.0 - Security Recon Platform
 ```
 
-## 🎯 Features
+## ✨ What's New in v2
 
-- **Single CLI Tool** - One command for everything: `macaron`
-- **Two Scan Modes**:
-  - `wide` - Full infrastructure recon (subdomains → DNS → ports → HTTP → URLs → vulns)
-  - `narrow` - Application-specific (crawling, content discovery, focused vuln scan)
-- **Chained Pipeline** - Each stage automatically feeds into the next
-- **30+ Tools** - subfinder, amass, httpx, nuclei, katana, gau, and more
-- **Proxychains** - All scans go through proxychains to avoid rate limiting
-- **Auto-Resume** - Picks up where it left off on device restart
-- **Discord Alerts** - Get notified for vulnerabilities and scan progress
-- **Smart Scanning** - Only scans resolved/live hosts
+- **🎨 Beautiful UI** - Progress bars, spinners, colored output with Rich library
+- **⚡ Simplified CLI** - Short flags: `-s` scan, `-S` status, `-R` results, `-L` tools
+- **🚀 Three Scan Modes** - `wide`, `narrow`, and NEW `fast` mode
+- **🔧 Optimized Pipeline** - Better tool chaining with proper rate limits
+- **📊 Live Progress** - See each tool running with progress tracking
 
 ## 🚀 Quick Start
 
-### Install
+```bash
+# Install
+chmod +x macaron && sudo cp macaron /usr/local/bin/
+pip install rich  # For beautiful UI
+sudo macaron -I   # Install recon tools
+
+# Scan!
+macaron -s example.com           # Wide scan (default)
+macaron -s app.com -n            # Narrow scan (app-focused)
+macaron -s target.com -f         # Fast scan (quick wins)
+macaron -s target.com --slow     # Slow mode (ISP friendly)
+```
+
+## 📋 Command Reference
+
+| Short | Long | Description |
+|-------|------|-------------|
+| `-s TARGET` | `--scan` | Scan target(s) |
+| `-S` | `--status` | Show status & summary |
+| `-R` | `--results` | Show scan results |
+| `-L` | `--list-tools` | List installed tools |
+| `-E` | `--export` | Export results to JSON |
+| `-I` | `--install` | Install recon tools (sudo) |
+| `-C` | `--config` | Show configuration |
+
+### Scan Options
+
+| Flag | Description |
+|------|-------------|
+| `-n` | Narrow mode (app-focused) |
+| `-f` | Fast mode (minimal tools) |
+| `-F FILE` | Targets from file |
+| `--stdin` | Read from stdin |
+| `--slow` | Slow mode (10 req/s) |
+| `--no-proxy` | Disable proxychains |
+| `-q` | Quiet mode |
+
+### Results Options
+
+| Flag | Description |
+|------|-------------|
+| `-d DOMAIN` | Filter by domain |
+| `-w TYPE` | What to show: subdomains, live, ports, urls, js, vulns |
+| `--limit N` | Limit results (default: 50) |
+
+## 📋 Scan Modes
+
+### 🔍 WIDE Mode (Default)
+Full infrastructure reconnaissance:
+```
+1. Subdomain Discovery  →  subfinder, amass, assetfinder, findomain, crt.sh
+2. DNS Resolution       →  dnsx (with retries)
+3. Port Scanning        →  naabu (top 1000)
+4. HTTP Probing         →  httpx (tech-detect, CDN)
+5. URL Discovery        →  gau, waybackurls, katana
+6. JS Analysis          →  getJS
+7. Screenshots          →  gowitness
+8. Vuln Scanning        →  nuclei
+```
+
+### 🎯 NARROW Mode (-n)
+Application-focused testing:
+```
+1. DNS Validation       →  dnsx
+2. Light Port Scan      →  naabu (web ports only)
+3. HTTP Probing         →  httpx
+4. Deep Crawling        →  katana (depth 4), hakrawler
+5. URL Archives         →  gau, waybackurls
+6. JS Analysis          →  getJS
+7. Content Discovery    →  ffuf
+8. Screenshots          →  gowitness
+9. Vuln Scanning        →  nuclei (focused)
+```
+
+### ⚡ FAST Mode (-f)
+Quick wins, minimal time:
+```
+1. Quick Subdomains     →  subfinder, crt.sh
+2. HTTP Probing         →  httpx
+3. Quick Vuln Scan      →  nuclei (critical+high only)
+```
+
+## 💻 Examples
 
 ```bash
-# In WSL/Kali
-git clone <repo> macaron && cd macaron
-chmod +x install-macaron.sh && ./install-macaron.sh
+# Infrastructure recon on bug bounty target
+macaron -s hackerone.com
+
+# Application testing
+macaron -s https://api.example.com -n
+
+# Multiple targets from file
+macaron -s -F scope.txt
+
+# Quick scan for immediate wins
+macaron -s target.com -f
+
+# Slow and stealthy (avoids rate limits)
+macaron -s target.com --slow
+
+# Check results
+macaron -S                    # Status summary
+macaron -R                    # All results
+macaron -R -d example.com     # Specific domain
+macaron -R -w vulns           # Vulnerabilities only
+
+# List tools
+macaron -L
+
+# Export for reporting
+macaron -E -o report.json
+
+# Configure Discord webhook
+macaron --webhook "https://discord.com/api/webhooks/..." --test
 ```
 
-Or manual:
-```bash
-chmod +x macaron
-sudo cp macaron /usr/local/bin/
-sudo macaron install  # Install recon tools
-```
+## 🛠️ Tool Pipeline (Optimized)
 
-### Usage
+Each tool is configured with optimal flags discovered from `-h` analysis:
 
-```bash
-# Wide mode - Infrastructure recon (subdomains, ports, everything)
-macaron scan -t example.com
-
-# Narrow mode - Application-specific testing
-macaron scan -t https://app.example.com -m narrow
-
-# Multiple targets
-macaron scan -t target1.com target2.com
-
-# From file
-macaron scan -f targets.txt
-
-# Pipe from stdin
-echo "example.com" | macaron scan --stdin
-
-# Without proxychains (faster but may get rate limited)
-macaron scan -t example.com --no-proxy
-
-# Resume interrupted scan
-macaron scan --resume
-```
-
-## 📋 Scan Pipelines
-
-### WIDE Mode (Infrastructure)
-```
-Stage 1: Subdomain Discovery  →  subfinder, amass, assetfinder, findomain, crt.sh, chaos
-Stage 2: DNS Resolution       →  dnsx
-Stage 3: Port Scanning        →  naabu
-Stage 4: HTTP Probing         →  httpx (with tech detection)
-Stage 5: URL Discovery        →  gau, waymore, waybackurls, katana
-Stage 6: JS Analysis          →  getJS, linkfinder
-Stage 7: Screenshots          →  gowitness, eyewitness
-Stage 8: Vuln Scanning        →  nuclei
-```
-
-### NARROW Mode (Application)
-```
-Stage 1: HTTP Probing         →  httpx
-Stage 2: Deep Crawling        →  katana, hakrawler  
-Stage 3: URL Discovery        →  gau, waymore
-Stage 4: JS Analysis          →  getJS, linkfinder
-Stage 5: Content Discovery    →  ffuf
-Stage 6: Screenshots          →  gowitness
-Stage 7: Vuln Scanning        →  nuclei (focused templates)
-```
-
-## 💻 All Commands
-
-```bash
-# Scanning
-macaron scan -t example.com              # Wide scan (default)
-macaron scan -t example.com -m narrow    # Narrow scan
-macaron scan -f targets.txt              # From file
-macaron scan --stdin                     # From pipe
-macaron scan --resume                    # Resume last scan
-macaron scan -t target.com --no-proxy    # Without proxychains
-macaron scan -t target.com --threads 100 # Custom thread count
-
-# Target management
-macaron add example.com target.com       # Save targets
-macaron list targets                     # Show saved targets
-
-# Tools
-macaron install                          # Install all tools (sudo)
-macaron list tools                       # Show installed tools
-
-# Results
-macaron list results                     # Show scan results
-macaron export -o results.json           # Export all data
-macaron export -d example.com            # Export single domain
-
-# Configuration  
-macaron config show                      # Show config
-macaron config set --key KEY --value VAL # Set config value
-macaron config webhook --url URL --test  # Set Discord webhook
-```
-
-## 🛠️ Tools Included
-
-| Category | Tools |
-|----------|-------|
-| **Subdomain Enum** | subfinder, amass, assetfinder, findomain, chaos, crt.sh |
-| **DNS Resolution** | dnsx, massdns |
-| **Port Scanning** | naabu, masscan, nmap |
-| **HTTP Probing** | httpx (with tech detection) |
-| **URL Discovery** | gau, waymore, waybackurls, katana, hakrawler |
-| **JS Analysis** | getJS, linkfinder, secretfinder |
-| **Content Discovery** | ffuf, feroxbuster, dirsearch |
-| **Vuln Scanning** | nuclei |
-| **Screenshots** | gowitness, eyewitness |
-
-## ⚙️ Configuration
-
-Config stored in `~/.macaron/config/config.json`
-
-```bash
-# Set Discord webhook
-macaron config webhook --url "https://discord.com/api/webhooks/..." --test
-
-# Enable/disable features
-macaron config set --key proxy.enabled --value true
-macaron config set --key discord.enabled --value true
-
-# Add API keys
-macaron config set --key api_keys.chaos --value "YOUR_KEY"
-```
+| Tool | Key Optimizations |
+|------|-------------------|
+| **subfinder** | `-all -t 25` (all sources, parallel) |
+| **amass** | `-passive -dns-qps 50` (rate limited) |
+| **dnsx** | `-a -resp -json -t 100` (fast resolve) |
+| **naabu** | `-top-ports 1000 -retries 2` (reliable) |
+| **httpx** | `-sc -title -td -cdn` (full detection) |
+| **katana** | `-jc -iqp -d 3` (JS crawling, dedup) |
+| **gau** | `--subs --threads 5` (include subs) |
+| **nuclei** | `-rl 100 -c 25 -nh` (rate limited) |
+| **gowitness** | `scan file --delay 2` (v3 API) |
 
 ## 📁 Output Structure
 
 ```
 ~/.macaron/
 ├── config/
-│   ├── config.json       # Configuration
-│   └── targets.txt       # Saved targets
+│   └── config.json       # Configuration
 ├── data/
 │   └── <target>/
 │       ├── subdomains.txt
@@ -168,12 +169,10 @@ macaron config set --key api_keys.chaos --value "YOUR_KEY"
 │       ├── technologies.txt
 │       ├── urls.txt
 │       ├── js_files.txt
-│       ├── endpoints.txt
 │       ├── summary.json
-│       ├── screenshots/
-│       └── vulnerabilities/
+│       ├── nuclei.json
+│       └── screenshots/
 ├── state/
-│   └── scan_state.json   # For resume
 ├── logs/
 └── wordlists/
     └── common.txt
@@ -191,42 +190,26 @@ tcp_connect_time_out 8000
 
 [ProxyList]
 socks5 127.0.0.1 9050   # Tor
-# Or your own proxies
 ```
-
-## 🔄 Auto-Resume
-
-Set up auto-resume on boot:
-```bash
-# Add to crontab
-(crontab -l; echo "@reboot macaron scan --resume") | crontab -
-```
-
-Or use the installer which sets this up automatically.
 
 ## 📱 Discord Notifications
 
-Get notified for:
+```bash
+macaron --webhook "https://discord.com/api/webhooks/..." --test
+```
+
+Notifications for:
 - 🚀 Scan started
 - ✅ Scan completed (with stats)
 - ⚠️ Vulnerabilities found (critical/high)
-- ❌ Errors
 
-## 📊 Examples
+## 🎨 UI Preview
 
-```bash
-# Full infrastructure recon on a bug bounty target
-macaron scan -t hackerone.com
-
-# Application testing on a specific web app
-macaron scan -t https://api.example.com -m narrow
-
-# Scan multiple targets quietly
-macaron scan -f scope.txt -q
-
-# Export results for reporting
-macaron export -o report.json
-```
+The new v2 interface shows:
+- Real-time progress bars per tool
+- Stage completion summaries
+- Color-coded vulnerability counts
+- Beautiful summary tables
 
 ## License
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MACARON - Massive Automated Comprehensive Asset Reconnaissance & Offensive Nexus
-A unified security reconnaissance CLI tool
+MACARON v2.0 - Massive Automated Comprehensive Asset Reconnaissance & Offensive Nexus
+A beautiful, optimized security reconnaissance CLI with modern UI
 """
 import argparse
 import sys
@@ -12,30 +12,49 @@ import subprocess
 import tempfile
 import signal
 import re
+import time
+import threading
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
-import threading
-import time
 
-# ============== CONFIGURATION ==============
+# Rich for beautiful CLI UI
+try:
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.live import Live
+    from rich.layout import Layout
+    from rich.text import Text
+    from rich.style import Style
+    from rich import box
+    from rich.tree import Tree
+    from rich.syntax import Syntax
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+    print("[!] Rich library not found. Install with: pip install rich")
+    print("[!] Falling back to basic output...")
 
-VERSION = "1.0.0"
+# ============== CONSTANTS ==============
+
+VERSION = "2.0.0"
 BANNER = """
-███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗
-████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔═══██╗████╗  ██║
-██╔████╔██║███████║██║     ███████║██████╔╝██║   ██║██╔██╗ ██║
-██║╚██╔╝██║██╔══██║██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║
-██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║
-╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
-        Macaron v{version}
+[bold cyan]███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗[/]
+[bold cyan]████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔═══██╗████╗  ██║[/]
+[bold blue]██╔████╔██║███████║██║     ███████║██████╔╝██║   ██║██╔██╗ ██║[/]
+[bold blue]██║╚██╔╝██║██╔══██║██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║[/]
+[bold magenta]██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║[/]
+[bold magenta]╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝[/]
+[dim]                    v{version} - Security Recon Platform[/]
 """
 
-# Default directories
+# Directories
 HOME_DIR = Path.home() / ".macaron"
 DATA_DIR = HOME_DIR / "data"
 CONFIG_DIR = HOME_DIR / "config"
@@ -43,80 +62,111 @@ STATE_DIR = HOME_DIR / "state"
 LOGS_DIR = HOME_DIR / "logs"
 WORDLISTS_DIR = HOME_DIR / "wordlists"
 
-# Default config
-DEFAULT_CONFIG = {
-    "discord": {
-        "enabled": False,
-        "webhook_url": "",
-        "notify_on": ["scan_start", "scan_complete", "stage_complete", "vulnerability"],
-        "notify_stages": True,  # Send per-stage notifications with files
-        "upload_files": True    # Attach result files to notifications
-    },
-    "proxy": {
-        "enabled": True,
-        "use_proxychains": True
-    },
-    "rate_limits": {
-        "requests_per_second": 50,  # Reduced default to prevent ISP issues
-        "threads": 25,              # Reduced default
-        "amass_dns_queries": 50,    # Amass-specific limit
-        "delay_between_tools": 2    # Seconds between tool runs
-    },
-    "scheduler": {
-        "cron": "0 */6 * * *",
-        "resume_on_boot": True
-    },
-    "network": {
-        "bandwidth_limit": "1M",     # Optional bandwidth limit
-        "connection_timeout": 10,
-        "max_retries": 2
-    }
-}
+# Console for Rich output
+console = Console() if RICH_AVAILABLE else None
 
-# ============== LOGGING ==============
+# ============== ENUMS ==============
 
-class ColoredFormatter(logging.Formatter):
-    COLORS = {
-        'DEBUG': '\033[36m',    # Cyan
-        'INFO': '\033[32m',     # Green
-        'WARNING': '\033[33m',  # Yellow
-        'ERROR': '\033[31m',    # Red
-        'CRITICAL': '\033[35m', # Magenta
-    }
-    RESET = '\033[0m'
-    
-    def format(self, record):
-        color = self.COLORS.get(record.levelname, self.RESET)
-        record.levelname = f"{color}{record.levelname}{self.RESET}"
-        return super().format(record)
+class Mode(Enum):
+    WIDE = "wide"
+    NARROW = "narrow"
+    FAST = "fast"  # New: Quick scan with minimal tools
 
-def setup_logging(verbose: bool = False, quiet: bool = False):
-    level = logging.DEBUG if verbose else (logging.WARNING if quiet else logging.INFO)
-    handler = logging.StreamHandler()
-    handler.setFormatter(ColoredFormatter('%(levelname)s %(message)s'))
-    logging.root.handlers = [handler]
-    logging.root.setLevel(level)
-
-logger = logging.getLogger("macaron")
-
-# ============== ENUMS & TYPES ==============
-
-class ScanMode(Enum):
-    WIDE = "wide"      # Infrastructure recon
-    NARROW = "narrow"  # Application-specific
-
-class ScanStatus(Enum):
+class Status(Enum):
     PENDING = "pending"
     RUNNING = "running"
-    COMPLETED = "completed"
+    DONE = "done"
     FAILED = "failed"
-    PAUSED = "paused"
+    SKIPPED = "skipped"
+
+# ============== THEME / COLORS ==============
+
+class Theme:
+    """Color theme for the UI"""
+    PRIMARY = "cyan"
+    SECONDARY = "blue"
+    SUCCESS = "green"
+    WARNING = "yellow"
+    ERROR = "red"
+    INFO = "white"
+    DIM = "dim"
+    HIGHLIGHT = "bold magenta"
+    
+    # Stage colors
+    STAGE_SUBDOMAIN = "bold cyan"
+    STAGE_DNS = "bold blue"
+    STAGE_PORT = "bold yellow"
+    STAGE_HTTP = "bold green"
+    STAGE_URL = "bold magenta"
+    STAGE_JS = "bold cyan"
+    STAGE_SCREEN = "bold blue"
+    STAGE_VULN = "bold red"
+
+# ============== UTILITIES ==============
+
+def ensure_dir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def is_installed(tool: str) -> bool:
+    return shutil.which(tool) is not None
+
+def run_cmd(cmd: List[str], timeout: int = 300, use_proxy: bool = False, stdin_input: str = None) -> Tuple[int, str, str]:
+    """Run command with optional proxychains"""
+    if use_proxy and is_installed("proxychains4"):
+        cmd = ["proxychains4", "-q"] + cmd
+    try:
+        result = subprocess.run(cmd, timeout=timeout, capture_output=True, text=True, input=stdin_input)
+        return result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        return -1, "", "Timeout"
+    except Exception as e:
+        return -1, "", str(e)
+
+def sanitize(target: str) -> str:
+    return re.sub(r'[^\w\-.]', '_', target.replace("https://", "").replace("http://", "").split("/")[0])
+
+def strip_protocol(url: str) -> str:
+    return url.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
+
+def save_list(filepath: Path, items):
+    with open(filepath, 'w') as f:
+        for item in sorted(set(items)):
+            f.write(f"{item}\n")
+
+def load_list(filepath: Path) -> List[str]:
+    if filepath.exists():
+        with open(filepath) as f:
+            return [l.strip() for l in f if l.strip()]
+    return []
+
+def load_config() -> Dict:
+    config_file = CONFIG_DIR / "config.json"
+    default = {
+        "discord": {"enabled": False, "webhook_url": "", "notify_on": ["scan_start", "scan_complete", "vulnerability"]},
+        "proxy": {"enabled": True},
+        "rate_limits": {"requests_per_second": 50, "threads": 25}
+    }
+    if config_file.exists():
+        with open(config_file) as f:
+            return {**default, **json.load(f)}
+    return default
+
+def save_config(config: Dict):
+    ensure_dir(CONFIG_DIR)
+    with open(CONFIG_DIR / "config.json", 'w') as f:
+        json.dump(config, f, indent=2)
+
+def get_timestamp() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+# ============== SCAN CONTEXT ==============
 
 @dataclass
 class ScanContext:
-    """Context passed through scan pipeline"""
+    """Holds all scan data and state"""
     target: str
-    mode: ScanMode
+    mode: Mode
     output_dir: Path
     use_proxy: bool = True
     
@@ -131,224 +181,294 @@ class ScanContext:
     technologies: Dict[str, List[str]] = field(default_factory=dict)
     vulnerabilities: List[Dict] = field(default_factory=list)
     
-    # Tracking
+    # Stats
     errors: List[str] = field(default_factory=list)
     start_time: datetime = field(default_factory=datetime.now)
 
-# ============== UTILITIES ==============
+# ============== TOOL RUNNER ==============
 
-def ensure_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-def is_installed(tool: str) -> bool:
-    return shutil.which(tool) is not None
-
-def run_cmd(cmd: List[str], timeout: int = 300, use_proxy: bool = False, stdin_input: str = None) -> tuple:
-    """Run command with optional proxychains and stdin support"""
-    if use_proxy and is_installed("proxychains4"):
-        cmd = ["proxychains4", "-q"] + cmd
+class ToolRunner:
+    """Manages running individual recon tools with progress tracking"""
     
-    try:
-        result = subprocess.run(
-            cmd, timeout=timeout, capture_output=True, text=True,
-            input=stdin_input
-        )
-        return result.returncode, result.stdout, result.stderr
-    except subprocess.TimeoutExpired:
-        return -1, "", "Timeout"
-    except Exception as e:
-        return -1, "", str(e)
-
-def strip_protocol(url: str) -> str:
-    """Strip protocol and path from URL, return clean domain"""
-    return url.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
-
-def save_list(filepath: Path, items):
-    with open(filepath, 'w') as f:
-        for item in sorted(set(items)):
-            f.write(f"{item}\n")
-
-def load_list(filepath: Path) -> List[str]:
-    if filepath.exists():
-        with open(filepath) as f:
-            return [l.strip() for l in f if l.strip()]
-    return []
-
-def sanitize_target(target: str) -> str:
-    return re.sub(r'[^\w\-.]', '_', 
-                  target.replace("https://", "").replace("http://", "").split("/")[0])
-
-def get_timestamp() -> str:
-    return datetime.utcnow().isoformat() + "Z"
-
-def load_config() -> Dict:
-    config_file = CONFIG_DIR / "config.json"
-    if config_file.exists():
-        with open(config_file) as f:
-            return json.load(f)
-    return DEFAULT_CONFIG.copy()
-
-def save_config(config: Dict):
-    ensure_dir(CONFIG_DIR)
-    with open(CONFIG_DIR / "config.json", 'w') as f:
-        json.dump(config, f, indent=2)
-
-# ============== DISCORD NOTIFIER ==============
-
-class DiscordNotifier:
-    def __init__(self):
-        self.config = load_config().get("discord", {})
-        self.enabled = self.config.get("enabled", False)
-        self.webhook_url = self.config.get("webhook_url", "")
-        self._rate_limit_until = 0
+    def __init__(self, use_proxy: bool = True, rate_limit: int = 100, threads: int = 25):
+        self.use_proxy = use_proxy and is_installed("proxychains4")
+        self.rate_limit = rate_limit
+        self.threads = threads
     
-    def send(self, title: str, message: str, color: int = 0x3498db, file_path: Path = None):
-        if not self.enabled or not self.webhook_url:
-            return
-        
-        # Rate limit protection
-        if time.time() < self._rate_limit_until:
-            return
-        
-        try:
-            import urllib.request
-            
-            if file_path and file_path.exists() and file_path.stat().st_size < 8_000_000:
-                # Send with file attachment using multipart
-                self._send_with_file(title, message, color, file_path)
-            else:
-                # Send embed only
-                payload = json.dumps({
-                    "embeds": [{
-                        "title": title,
-                        "description": message[:4000],
-                        "color": color,
-                        "footer": {"text": "Macaron"},
-                        "timestamp": get_timestamp()
-                    }]
-                }).encode()
-                
-                req = urllib.request.Request(
-                    self.webhook_url,
-                    data=payload,
-                    headers={"Content-Type": "application/json"}
-                )
-                resp = urllib.request.urlopen(req, timeout=10)
-                
-                # Handle rate limits
-                if resp.status == 429:
-                    retry_after = float(resp.headers.get('Retry-After', 5))
-                    self._rate_limit_until = time.time() + retry_after
-        except Exception as e:
-            logger.debug(f"Discord notification failed: {e}")
+    def run(self, cmd: List[str], timeout: int = 300, stdin_input: str = None) -> Tuple[int, str, str]:
+        """Execute a tool command"""
+        return run_cmd(cmd, timeout, self.use_proxy, stdin_input)
     
-    def _send_with_file(self, title: str, message: str, color: int, file_path: Path):
-        """Send message with file attachment"""
+    # ==================== SUBDOMAIN TOOLS ====================
+    
+    def subfinder(self, target: str) -> Set[str]:
+        """Fast passive subdomain enumeration"""
+        cmd = ["subfinder", "-d", target, "-silent", "-all", "-t", str(self.threads)]
+        code, out, _ = self.run(cmd, 600)
+        return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
+    
+    def amass_passive(self, target: str) -> Set[str]:
+        """Amass passive mode with rate limiting"""
+        cmd = ["amass", "enum", "-passive", "-d", target, "-dns-qps", "50", "-timeout", "10"]
+        code, out, _ = self.run(cmd, 600)
+        return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
+    
+    def assetfinder(self, target: str) -> Set[str]:
+        """Quick asset finder"""
+        cmd = ["assetfinder", "--subs-only", target]
+        code, out, _ = self.run(cmd, 300)
+        return set(l.strip() for l in out.split('\n') if l.strip() and target in l) if code == 0 else set()
+    
+    def findomain(self, target: str) -> Set[str]:
+        """Fast cross-platform subdomain finder"""
+        cmd = ["findomain", "-t", target, "-q"]
+        code, out, _ = self.run(cmd, 300)
+        return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
+    
+    def crtsh(self, target: str) -> Set[str]:
+        """Certificate transparency logs"""
         import urllib.request
-        import uuid
-        
-        boundary = f"----MacaronBoundary{uuid.uuid4().hex}"
-        
-        # Build multipart body
-        body = []
-        
-        # Add payload_json part
-        payload = {
-            "embeds": [{
-                "title": title,
-                "description": message[:4000],
-                "color": color,
-                "footer": {"text": "Macaron"},
-                "timestamp": get_timestamp()
-            }]
-        }
-        body.append(f"--{boundary}".encode())
-        body.append(b'Content-Disposition: form-data; name="payload_json"')
-        body.append(b'Content-Type: application/json')
-        body.append(b'')
-        body.append(json.dumps(payload).encode())
-        
-        # Add file part
-        body.append(f"--{boundary}".encode())
-        body.append(f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"'.encode())
-        body.append(b'Content-Type: text/plain')
-        body.append(b'')
-        body.append(file_path.read_bytes())
-        body.append(f"--{boundary}--".encode())
-        
-        body_bytes = b'\r\n'.join(body)
-        
-        req = urllib.request.Request(
-            self.webhook_url,
-            data=body_bytes,
-            headers={
-                "Content-Type": f"multipart/form-data; boundary={boundary}"
-            }
-        )
-        urllib.request.urlopen(req, timeout=30)
+        try:
+            url = f"https://crt.sh/?q=%25.{target}&output=json"
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+                subs = set()
+                for entry in data:
+                    for name in entry.get("name_value", "").split('\n'):
+                        name = name.strip().lower()
+                        if name and '*' not in name:
+                            subs.add(name)
+                return subs
+        except:
+            return set()
     
-    def scan_start(self, targets: List[str], mode: str):
-        self.send("🚀 Scan Started", 
-                  f"**Mode:** {mode}\n**Targets:** {', '.join(targets[:5])}", 
-                  0x3498db)
+    # ==================== DNS TOOLS ====================
     
-    def scan_complete(self, stats: Dict):
-        self.send("✅ Scan Complete",
-                  f"**Subdomains:** {stats.get('subdomains', 0)}\n"
-                  f"**Live Hosts:** {stats.get('live_hosts', 0)}\n"
-                  f"**Vulnerabilities:** {stats.get('vulnerabilities', 0)}\n"
-                  f"**Duration:** {stats.get('duration', 'N/A')}",
-                  0x2ecc71)
+    def dnsx(self, hosts: List[str]) -> Dict[str, List[str]]:
+        """Fast DNS resolution with all records"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write('\n'.join(hosts))
+            temp = f.name
+        try:
+            cmd = ["dnsx", "-l", temp, "-a", "-resp", "-json", "-silent", "-t", str(min(self.threads, 100))]
+            code, out, _ = self.run(cmd, 600)
+            resolved = {}
+            if code == 0:
+                for line in out.split('\n'):
+                    if line.strip():
+                        try:
+                            data = json.loads(line)
+                            host, ips = data.get("host", ""), data.get("a", [])
+                            if host and ips:
+                                resolved[host] = ips
+                        except:
+                            pass
+            return resolved
+        finally:
+            Path(temp).unlink(missing_ok=True)
     
-    def vulnerability(self, name: str, severity: str, target: str):
-        colors = {"critical": 0xff0000, "high": 0xff6600, "medium": 0xffff00, "low": 0x00ff00}
-        self.send(f"⚠️ {severity.upper()}: {name}",
-                  f"**Target:** {target}",
-                  colors.get(severity.lower(), 0x7289da))
+    # ==================== PORT TOOLS ====================
     
-    def stage_complete(self, stage: str, target: str, count: int, file_path: Path = None):
-        """Notify when a stage completes with optional file attachment"""
-        emoji_map = {
-            "subdomains": "🔍",
-            "dns": "📡",
-            "ports": "🔌",
-            "http": "🌐",
-            "crawl": "🕷️",
-            "urls": "🔗",
-            "js": "📜",
-            "content": "📁",
-            "screenshots": "📸",
-            "vulns": "🎯"
-        }
-        emoji = emoji_map.get(stage, "✓")
-        self.send(
-            f"{emoji} Stage Complete: {stage.upper()}",
-            f"**Target:** {target}\n**Results:** {count} items found",
-            0x9b59b6,
-            file_path
-        )
+    def naabu(self, hosts: List[str], top_ports: str = "1000") -> Dict[str, List[int]]:
+        """Fast port scanning with service detection"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write('\n'.join(hosts))
+            temp = f.name
+        try:
+            cmd = [
+                "naabu", "-l", temp, "-json", "-silent",
+                "-top-ports", top_ports,
+                "-rate", str(self.rate_limit),
+                "-c", str(min(self.threads, 25)),
+                "-retries", "2"
+            ]
+            code, out, _ = self.run(cmd, 1800)
+            ports = {}
+            if code == 0:
+                for line in out.split('\n'):
+                    if line.strip():
+                        try:
+                            data = json.loads(line)
+                            host, port = data.get("host", ""), data.get("port", 0)
+                            if host and port:
+                                ports.setdefault(host, []).append(port)
+                        except:
+                            pass
+            return ports
+        finally:
+            Path(temp).unlink(missing_ok=True)
     
-    def progress(self, target: str, stage: str, tool: str, found: int):
-        """Real-time progress update (throttled to avoid spam)"""
-        self.send(
-            f"🔄 {tool}",
-            f"**Target:** {target}\n**Stage:** {stage}\n**Found:** {found}",
-            0x7289da
-        )
+    # ==================== HTTP TOOLS ====================
+    
+    def httpx(self, targets: List[str]) -> Tuple[Set[str], Dict[str, List[str]]]:
+        """HTTP probing with tech detection, CDN detection, and screenshots"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write('\n'.join(targets))
+            temp = f.name
+        try:
+            cmd = [
+                "httpx", "-l", temp, "-json", "-silent",
+                "-sc", "-title", "-td", "-cdn",  # status-code, title, tech-detect, cdn
+                "-follow-redirects",
+                "-rate-limit", str(self.rate_limit),
+                "-threads", str(min(self.threads, 50))
+            ]
+            code, out, _ = self.run(cmd, 1800)
+            live, techs = set(), {}
+            if code == 0:
+                for line in out.split('\n'):
+                    if line.strip():
+                        try:
+                            data = json.loads(line)
+                            url = data.get("url", "")
+                            if url:
+                                live.add(url)
+                                if data.get("tech"):
+                                    techs[url] = data["tech"]
+                        except:
+                            pass
+            return live, techs
+        finally:
+            Path(temp).unlink(missing_ok=True)
+    
+    # ==================== URL DISCOVERY TOOLS ====================
+    
+    def gau(self, target: str) -> Set[str]:
+        """Get All URLs from archives"""
+        cmd = ["gau", "--subs", "--threads", "5", target]
+        code, out, _ = self.run(cmd, 300)
+        return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
+    
+    def waybackurls(self, target: str) -> Set[str]:
+        """Wayback machine URLs"""
+        code, out, _ = self.run(["waybackurls"], 300, stdin_input=target)
+        return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
+    
+    def katana(self, targets: List[str], depth: int = 3) -> Set[str]:
+        """Modern crawler with JS parsing"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write('\n'.join(targets))
+            temp = f.name
+        try:
+            cmd = [
+                "katana", "-list", temp, "-silent",
+                "-d", str(depth),
+                "-jc",  # JS crawling
+                "-iqp",  # Ignore query params
+                "-c", str(min(self.threads, 20)),
+                "-rl", str(self.rate_limit)
+            ]
+            code, out, _ = self.run(cmd, 900)
+            return set(l.strip() for l in out.split('\n') if l.strip()) if code == 0 else set()
+        finally:
+            Path(temp).unlink(missing_ok=True)
+    
+    def hakrawler(self, targets: List[str]) -> Set[str]:
+        """Fast crawling for endpoints"""
+        urls = set()
+        for target in targets[:5]:
+            cmd = ["hakrawler", "-d", "2", "-subs", "-u"]
+            code, out, _ = self.run(cmd, 300, stdin_input=target)
+            if code == 0:
+                urls.update(l.strip() for l in out.split('\n') if l.strip())
+        return urls
+    
+    # ==================== JS ANALYSIS TOOLS ====================
+    
+    def getjs(self, targets: List[str]) -> Set[str]:
+        """Extract JavaScript files"""
+        js_files = set()
+        for target in targets[:20]:
+            cmd = ["getJS", "--url", target, "--complete"]
+            code, out, _ = self.run(cmd, 120)
+            if code == 0:
+                js_files.update(l.strip() for l in out.split('\n') if l.strip() and '.js' in l)
+        return js_files
+    
+    # ==================== SCREENSHOT TOOLS ====================
+    
+    def gowitness(self, targets: List[str], output_dir: Path):
+        """Take screenshots using gowitness v3"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write('\n'.join(targets))
+            temp = f.name
+        try:
+            ensure_dir(output_dir)
+            cmd = [
+                "gowitness", "scan", "file", "-f", temp,
+                "--screenshot-path", str(output_dir),
+                "--delay", "2",
+                "--threads", str(min(self.threads, 8))
+            ]
+            self.run(cmd, 3600)
+        finally:
+            Path(temp).unlink(missing_ok=True)
+    
+    # ==================== VULNERABILITY SCANNING ====================
+    
+    def nuclei(self, targets: List[str], output_file: Path, severity: str = "critical,high,medium") -> List[Dict]:
+        """Template-based vulnerability scanning"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write('\n'.join(targets))
+            temp = f.name
+        try:
+            ensure_dir(output_file.parent)
+            cmd = [
+                "nuclei", "-l", temp,
+                "-o", str(output_file), "-jsonl", "-silent",
+                "-severity", severity,
+                "-rl", str(self.rate_limit),
+                "-c", str(min(self.threads, 25)),
+                "-nh"  # No update check
+            ]
+            self.run(cmd, 7200)
+            
+            vulns = []
+            if output_file.exists():
+                with open(output_file) as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                vulns.append({
+                                    "host": data.get("host", ""),
+                                    "name": data.get("info", {}).get("name", ""),
+                                    "severity": data.get("info", {}).get("severity", "info"),
+                                    "template": data.get("template-id", ""),
+                                })
+                            except:
+                                pass
+            return vulns
+        finally:
+            Path(temp).unlink(missing_ok=True)
+    
+    # ==================== CONTENT DISCOVERY ====================
+    
+    def ffuf(self, target: str, output_dir: Path, wordlist: Path):
+        """Fast web fuzzer"""
+        if not wordlist.exists():
+            return
+        output_file = output_dir / f"ffuf_{sanitize(target)}.json"
+        cmd = [
+            "ffuf", "-u", f"{target}/FUZZ", "-w", str(wordlist),
+            "-o", str(output_file), "-of", "json",
+            "-mc", "200,201,204,301,302,307,401,403,405",
+            "-t", str(min(self.threads, 50)),
+            "-rate", str(self.rate_limit),
+            "-s"  # Silent
+        ]
+        self.run(cmd, 600)
 
 # ============== SCAN ENGINE ==============
 
 class MacaronEngine:
-    """Main reconnaissance engine"""
+    """Main scan orchestrator with beautiful progress UI"""
     
-    def __init__(self, use_proxy: bool = True, threads: int = 50, rate_limit: int = 100):
-        self.use_proxy = use_proxy and is_installed("proxychains4")
-        self.threads = threads
-        self.rate_limit = rate_limit
-        self.running = False
+    def __init__(self, use_proxy: bool = True, rate: int = 100, threads: int = 25, quiet: bool = False):
+        self.runner = ToolRunner(use_proxy, rate, threads)
+        self.quiet = quiet
+        self.running = True
         self.notifier = DiscordNotifier()
-        self.state_file = STATE_DIR / "scan_state.json"
         
         # Ensure directories
         for d in [DATA_DIR, CONFIG_DIR, STATE_DIR, LOGS_DIR, WORDLISTS_DIR]:
@@ -358,47 +478,16 @@ class MacaronEngine:
         signal.signal(signal.SIGTERM, self._handle_interrupt)
     
     def _handle_interrupt(self, signum, frame):
-        logger.warning("Interrupt received, saving state...")
         self.running = False
-        self._save_state()
+        if console:
+            console.print("\n[yellow]⚠ Interrupt received, stopping gracefully...[/]")
     
-    def _save_state(self, state: Dict = None):
-        if state:
-            ensure_dir(STATE_DIR)
-            with open(self.state_file, 'w') as f:
-                json.dump(state, f, indent=2)
-    
-    def _load_state(self) -> Optional[Dict]:
-        if self.state_file.exists():
-            with open(self.state_file) as f:
-                return json.load(f)
-        return None
-    
-    def _cmd(self, cmd: List[str], timeout: int = 300, stdin_input: str = None) -> tuple:
-        """Run command with error logging"""
-        code, stdout, stderr = run_cmd(cmd, timeout, self.use_proxy, stdin_input)
-        
-        # Log errors for debugging
-        if code != 0 and code != -1:
-            tool_name = cmd[0] if cmd else "unknown"
-            if "proxychains4" in tool_name and len(cmd) > 2:
-                tool_name = cmd[2]
-            error_msg = stderr[:200] if stderr else "No output"
-            logger.debug(f"Tool {tool_name} exited with code {code}: {error_msg}")
-        
-        return code, stdout, stderr
-    
-    # ============== MAIN SCAN ==============
-    
-    def scan(self, targets: List[str], mode: ScanMode = ScanMode.WIDE, resume: bool = False) -> Dict:
-        """Run full reconnaissance scan"""
-        start_time = datetime.now()
-        self.running = True
-        
-        # Notify
+    def scan(self, targets: List[str], mode: Mode = Mode.WIDE) -> Dict:
+        """Execute scan with beautiful progress UI"""
+        start = datetime.now()
         self.notifier.scan_start(targets, mode.value)
         
-        all_stats = {
+        stats = {
             "mode": mode.value,
             "targets": len(targets),
             "subdomains": 0,
@@ -409,761 +498,362 @@ class MacaronEngine:
             "errors": 0
         }
         
-        logger.info(f"Starting {mode.value.upper()} scan on {len(targets)} target(s)")
-        if self.use_proxy:
-            logger.info("Proxychains: ENABLED")
+        if console and not self.quiet:
+            console.print(Panel(BANNER.format(version=VERSION), border_style="cyan", box=box.DOUBLE))
         
         for i, target in enumerate(targets):
             if not self.running:
                 break
             
-            logger.info(f"\n{'='*60}")
-            logger.info(f"[{i+1}/{len(targets)}] {target}")
-            logger.info(f"{'='*60}")
-            
-            # Create output directory
-            output_dir = DATA_DIR / sanitize_target(target)
-            ensure_dir(output_dir)
-            
-            # Create context
             ctx = ScanContext(
                 target=target,
                 mode=mode,
-                output_dir=output_dir,
-                use_proxy=self.use_proxy
+                output_dir=DATA_DIR / sanitize(target),
+                use_proxy=self.runner.use_proxy
             )
+            ensure_dir(ctx.output_dir)
             
-            # Run pipeline
-            if mode == ScanMode.WIDE:
+            if console and not self.quiet:
+                console.print(f"\n[bold cyan]━━━ Target {i+1}/{len(targets)}: {target} ━━━[/]\n")
+            
+            # Run appropriate pipeline
+            if mode == Mode.WIDE:
                 ctx = self._pipeline_wide(ctx)
-            else:
+            elif mode == Mode.NARROW:
                 ctx = self._pipeline_narrow(ctx)
+            else:  # FAST
+                ctx = self._pipeline_fast(ctx)
             
             # Update stats
-            all_stats["subdomains"] += len(ctx.subdomains)
-            all_stats["live_hosts"] += len(ctx.live_hosts)
-            all_stats["ports"] += sum(len(p) for p in ctx.ports.values())
-            all_stats["urls"] += len(ctx.urls)
-            all_stats["vulnerabilities"] += len(ctx.vulnerabilities)
-            all_stats["errors"] += len(ctx.errors)
+            stats["subdomains"] += len(ctx.subdomains)
+            stats["live_hosts"] += len(ctx.live_hosts)
+            stats["ports"] += sum(len(p) for p in ctx.ports.values())
+            stats["urls"] += len(ctx.urls)
+            stats["vulnerabilities"] += len(ctx.vulnerabilities)
+            stats["errors"] += len(ctx.errors)
             
-            # Save results
             self._save_results(ctx)
         
-        # Duration
-        duration = datetime.now() - start_time
-        all_stats["duration"] = str(duration).split('.')[0]
-        all_stats["status"] = "completed" if self.running else "interrupted"
+        stats["duration"] = str(datetime.now() - start).split('.')[0]
+        stats["status"] = "completed" if self.running else "interrupted"
         
-        # Notify
-        self.notifier.scan_complete(all_stats)
+        self.notifier.scan_complete(stats)
+        self._print_summary(stats)
         
-        return all_stats
+        return stats
     
-    # ============== PIPELINES ==============
+    def _run_stage(self, name: str, emoji: str, color: str, tools: List[Tuple[str, callable]], ctx: ScanContext) -> Any:
+        """Run a stage with progress tracking"""
+        if not self.running:
+            return
+        
+        results = {}
+        
+        if console and not self.quiet:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn(f"[{color}]{emoji} {name}[/]"),
+                BarColumn(bar_width=30),
+                TaskProgressColumn(),
+                TextColumn("•"),
+                TimeElapsedColumn(),
+                console=console,
+                transient=True
+            ) as progress:
+                task = progress.add_task("", total=len(tools))
+                
+                for tool_name, tool_func in tools:
+                    if not self.running:
+                        break
+                    if not is_installed(tool_name.split()[0]):
+                        progress.advance(task)
+                        continue
+                    
+                    progress.update(task, description=f"[dim]{tool_name}[/]")
+                    try:
+                        result = tool_func()
+                        results[tool_name] = result
+                    except Exception as e:
+                        ctx.errors.append(f"{tool_name}: {e}")
+                    progress.advance(task)
+        else:
+            # Quiet mode - no progress bars
+            for tool_name, tool_func in tools:
+                if not self.running:
+                    break
+                if not is_installed(tool_name.split()[0]):
+                    continue
+                try:
+                    results[tool_name] = tool_func()
+                except Exception as e:
+                    ctx.errors.append(f"{tool_name}: {e}")
+        
+        return results
+    
+    # ==================== PIPELINES ====================
     
     def _pipeline_wide(self, ctx: ScanContext) -> ScanContext:
-        """Full infrastructure reconnaissance"""
+        """Full infrastructure recon - optimized pipeline"""
         
-        # Stage 1: Subdomain Discovery
-        ctx = self._stage_subdomains(ctx)
-        if not self.running: return ctx
+        # Stage 1: Subdomain Discovery (parallel passive sources)
+        tools = [
+            ("subfinder", lambda: self.runner.subfinder(ctx.target)),
+            ("assetfinder", lambda: self.runner.assetfinder(ctx.target)),
+            ("findomain", lambda: self.runner.findomain(ctx.target)),
+            ("crt.sh", lambda: self.runner.crtsh(ctx.target)),
+            ("amass", lambda: self.runner.amass_passive(ctx.target)),
+        ]
+        results = self._run_stage("Subdomain Discovery", "🔍", Theme.STAGE_SUBDOMAIN, tools, ctx)
+        for r in results.values():
+            if r:
+                ctx.subdomains.update(r)
+        ctx.subdomains = {s.lower() for s in ctx.subdomains if ctx.target in s.lower()}
+        
+        if ctx.subdomains:
+            save_list(ctx.output_dir / "subdomains.txt", ctx.subdomains)
+            self._stage_done("subdomains", len(ctx.subdomains))
+        
+        if not self.running or not ctx.subdomains:
+            return ctx
         
         # Stage 2: DNS Resolution
-        ctx = self._stage_dns(ctx)
-        if not self.running: return ctx
+        tools = [("dnsx", lambda: self.runner.dnsx(list(ctx.subdomains)))]
+        results = self._run_stage("DNS Resolution", "📡", Theme.STAGE_DNS, tools, ctx)
+        ctx.resolved = results.get("dnsx", {})
+        if ctx.resolved:
+            save_list(ctx.output_dir / "resolved.txt", [f"{h}: {', '.join(ips)}" for h, ips in ctx.resolved.items()])
+            self._stage_done("resolved", len(ctx.resolved))
         
-        # Stage 3: Port Scanning
-        ctx = self._stage_ports(ctx)
-        if not self.running: return ctx
+        if not self.running:
+            return ctx
         
-        # Stage 4: HTTP Probing
-        ctx = self._stage_http(ctx)
-        if not self.running: return ctx
+        # Stage 3: Port Scanning (on resolved hosts)
+        hosts = list(ctx.resolved.keys()) if ctx.resolved else list(ctx.subdomains)[:100]
+        tools = [("naabu", lambda: self.runner.naabu(hosts, "1000"))]
+        results = self._run_stage("Port Scanning", "🔌", Theme.STAGE_PORT, tools, ctx)
+        ctx.ports = results.get("naabu", {})
+        if ctx.ports:
+            save_list(ctx.output_dir / "ports.txt", [f"{h}:{p}" for h, ports in ctx.ports.items() for p in ports])
+            self._stage_done("ports", sum(len(p) for p in ctx.ports.values()))
         
-        # Stage 5: URL Discovery
-        ctx = self._stage_urls(ctx)
-        if not self.running: return ctx
+        if not self.running:
+            return ctx
+        
+        # Stage 4: HTTP Probing + Tech Detection (include non-standard ports)
+        probe_targets = set(ctx.subdomains)
+        for host, ports in ctx.ports.items():
+            for port in ports:
+                if port not in (80, 443):
+                    probe_targets.add(f"{host}:{port}")
+        
+        tools = [("httpx", lambda: self.runner.httpx(list(probe_targets)))]
+        results = self._run_stage("HTTP Probing", "🌐", Theme.STAGE_HTTP, tools, ctx)
+        live_result = results.get("httpx", (set(), {}))
+        ctx.live_hosts, ctx.technologies = live_result
+        if ctx.live_hosts:
+            save_list(ctx.output_dir / "live_hosts.txt", ctx.live_hosts)
+            save_list(ctx.output_dir / "technologies.txt", [f"{h}: {', '.join(t)}" for h, t in ctx.technologies.items()])
+            self._stage_done("live", len(ctx.live_hosts))
+        
+        if not self.running or not ctx.live_hosts:
+            return ctx
+        
+        # Stage 5: URL Discovery (passive + active)
+        clean_domain = strip_protocol(ctx.target)
+        tools = [
+            ("gau", lambda: self.runner.gau(clean_domain)),
+            ("waybackurls", lambda: self.runner.waybackurls(clean_domain)),
+            ("katana", lambda: self.runner.katana(list(ctx.live_hosts)[:20], depth=2)),
+        ]
+        results = self._run_stage("URL Discovery", "🔗", Theme.STAGE_URL, tools, ctx)
+        for r in results.values():
+            if r:
+                ctx.urls.update(r)
+        ctx.js_files = {u for u in ctx.urls if '.js' in u.lower() and not u.endswith('.json')}
+        if ctx.urls:
+            save_list(ctx.output_dir / "urls.txt", ctx.urls)
+            save_list(ctx.output_dir / "js_files.txt", ctx.js_files)
+            self._stage_done("urls", len(ctx.urls))
+        
+        if not self.running:
+            return ctx
         
         # Stage 6: JS Analysis
-        ctx = self._stage_js(ctx)
-        if not self.running: return ctx
+        tools = [("getJS", lambda: self.runner.getjs(list(ctx.live_hosts)[:20]))]
+        results = self._run_stage("JS Analysis", "📜", Theme.STAGE_JS, tools, ctx)
+        more_js = results.get("getJS", set())
+        ctx.js_files.update(more_js)
+        if ctx.js_files:
+            save_list(ctx.output_dir / "js_files.txt", ctx.js_files)
+            self._stage_done("js_files", len(ctx.js_files))
+        
+        if not self.running:
+            return ctx
         
         # Stage 7: Screenshots
-        ctx = self._stage_screenshots(ctx)
-        if not self.running: return ctx
+        tools = [("gowitness", lambda: self.runner.gowitness(list(ctx.live_hosts)[:50], ctx.output_dir / "screenshots"))]
+        self._run_stage("Screenshots", "📸", Theme.STAGE_SCREEN, tools, ctx)
+        self._stage_done("screenshots", len(list((ctx.output_dir / "screenshots").glob("*.png"))) if (ctx.output_dir / "screenshots").exists() else 0)
+        
+        if not self.running:
+            return ctx
         
         # Stage 8: Vulnerability Scanning
-        ctx = self._stage_vulns(ctx)
+        tools = [("nuclei", lambda: self.runner.nuclei(list(ctx.live_hosts), ctx.output_dir / "nuclei.json"))]
+        results = self._run_stage("Vulnerability Scan", "🎯", Theme.STAGE_VULN, tools, ctx)
+        ctx.vulnerabilities = results.get("nuclei", [])
+        if ctx.vulnerabilities:
+            self._stage_done("vulns", len(ctx.vulnerabilities), is_vuln=True)
+            for v in ctx.vulnerabilities:
+                if v.get("severity") in ("critical", "high"):
+                    self.notifier.vulnerability(v["name"], v["severity"], v["host"])
         
         return ctx
     
     def _pipeline_narrow(self, ctx: ScanContext) -> ScanContext:
-        """Application-specific reconnaissance"""
-        
-        # Add target as subdomain
+        """Application-focused recon"""
         ctx.subdomains.add(ctx.target)
         
-        # Stage 1: DNS Resolution (validate target is resolvable)
-        ctx = self._stage_dns(ctx)
-        if not self.running: return ctx
+        # DNS check
+        tools = [("dnsx", lambda: self.runner.dnsx([ctx.target]))]
+        results = self._run_stage("DNS Validation", "📡", Theme.STAGE_DNS, tools, ctx)
+        ctx.resolved = results.get("dnsx", {})
         
-        # Stage 2: Lightweight Port Scanning (common web ports only)
-        ctx = self._stage_ports_light(ctx)
-        if not self.running: return ctx
-        
-        # Stage 3: HTTP Probing
-        ctx = self._stage_http(ctx)
-        if not self.running: return ctx
-        
-        # Stage 4: Crawling
-        ctx = self._stage_crawl(ctx)
-        if not self.running: return ctx
-        
-        # Stage 5: URL Discovery
-        ctx = self._stage_urls(ctx)
-        if not self.running: return ctx
-        
-        # Stage 6: JS Analysis
-        ctx = self._stage_js(ctx)
-        if not self.running: return ctx
-        
-        # Stage 7: Content Discovery
-        ctx = self._stage_content(ctx)
-        if not self.running: return ctx
-        
-        # Stage 8: Screenshots
-        ctx = self._stage_screenshots(ctx)
-        if not self.running: return ctx
-        
-        # Stage 9: Vulnerability Scanning
-        ctx = self._stage_vulns(ctx, focused=True)
-        
-        return ctx
-    
-    # ============== STAGES ==============
-    
-    def _stage_subdomains(self, ctx: ScanContext) -> ScanContext:
-        """Subdomain enumeration"""
-        logger.info("\n[STAGE 1] Subdomain Discovery")
-        
-        all_subs = set()
-        
-        # Subfinder
-        if is_installed("subfinder"):
-            logger.info("  → subfinder")
-            code, out, _ = self._cmd(["subfinder", "-d", ctx.target, "-silent", "-all"], 600)
-            if code == 0:
-                subs = [l.strip() for l in out.split('\n') if l.strip()]
-                all_subs.update(subs)
-                logger.info(f"    Found {len(subs)}")
-        
-        # Amass - with strict rate limiting to prevent network overload
-        if is_installed("amass"):
-            logger.info("  → amass (passive, rate-limited)")
-            # Use passive mode with strict limits to avoid network overload
-            amass_cmd = [
-                "amass", "enum", 
-                "-passive",  # Passive only - no active DNS queries
-                "-d", ctx.target,
-                "-max-dns-queries", "50",  # Limit concurrent DNS
-                "-timeout", "10",  # 10 minute timeout
-            ]
-            code, out, _ = self._cmd(amass_cmd, 600)
-            if code == 0:
-                subs = [l.strip() for l in out.split('\n') if l.strip()]
-                all_subs.update(subs)
-                logger.info(f"    Found {len(subs)}")
-        
-        # Assetfinder
-        if is_installed("assetfinder"):
-            logger.info("  → assetfinder")
-            code, out, _ = self._cmd(["assetfinder", "--subs-only", ctx.target], 300)
-            if code == 0:
-                subs = [l.strip() for l in out.split('\n') if l.strip() and ctx.target in l]
-                all_subs.update(subs)
-                logger.info(f"    Found {len(subs)}")
-        
-        # Findomain
-        if is_installed("findomain"):
-            logger.info("  → findomain")
-            code, out, _ = self._cmd(["findomain", "-t", ctx.target, "-q"], 300)
-            if code == 0:
-                subs = [l.strip() for l in out.split('\n') if l.strip()]
-                all_subs.update(subs)
-                logger.info(f"    Found {len(subs)}")
-        
-        # crt.sh
-        logger.info("  → crt.sh")
-        try:
-            import urllib.request
-            url = f"https://crt.sh/?q=%25.{ctx.target}&output=json"
-            with urllib.request.urlopen(url, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
-                for entry in data:
-                    for name in entry.get("name_value", "").split('\n'):
-                        name = name.strip().lower()
-                        if name and '*' not in name:
-                            all_subs.add(name)
-            logger.info(f"    Found {len(all_subs)}")
-        except:
-            pass
-        
-        # Chaos
-        if is_installed("chaos"):
-            config = load_config()
-            api_key = config.get("api_keys", {}).get("chaos", os.environ.get("CHAOS_KEY", ""))
-            if api_key:
-                logger.info("  → chaos")
-                code, out, _ = self._cmd(["chaos", "-d", ctx.target, "-key", api_key, "-silent"], 300)
+        # Light port scan (web ports only)
+        if is_installed("naabu"):
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write(ctx.target)
+                temp = f.name
+            try:
+                cmd = ["naabu", "-l", temp, "-json", "-silent", "-p", "80,443,8080,8443,8000,3000,5000,9000"]
+                code, out, _ = run_cmd(cmd, 300, self.runner.use_proxy)
                 if code == 0:
-                    subs = [l.strip() for l in out.split('\n') if l.strip()]
-                    all_subs.update(subs)
+                    for line in out.split('\n'):
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                h, p = data.get("host", ""), data.get("port", 0)
+                                if h and p:
+                                    ctx.ports.setdefault(h, []).append(p)
+                            except:
+                                pass
+            finally:
+                Path(temp).unlink(missing_ok=True)
         
-        # Filter and dedupe
-        ctx.subdomains = {s.lower() for s in all_subs if ctx.target in s.lower()}
+        # HTTP probe
+        tools = [("httpx", lambda: self.runner.httpx([ctx.target]))]
+        results = self._run_stage("HTTP Probing", "🌐", Theme.STAGE_HTTP, tools, ctx)
+        live_result = results.get("httpx", (set(), {}))
+        ctx.live_hosts, ctx.technologies = live_result
+        if ctx.live_hosts:
+            save_list(ctx.output_dir / "live_hosts.txt", ctx.live_hosts)
+            self._stage_done("live", len(ctx.live_hosts))
         
-        logger.info(f"  ✓ Total unique: {len(ctx.subdomains)}")
-        subdomains_file = ctx.output_dir / "subdomains.txt"
-        save_list(subdomains_file, ctx.subdomains)
+        if not self.running or not ctx.live_hosts:
+            return ctx
         
-        # Discord notification with file
-        self.notifier.stage_complete("subdomains", ctx.target, len(ctx.subdomains), subdomains_file)
+        # Deep crawling
+        tools = [
+            ("katana", lambda: self.runner.katana(list(ctx.live_hosts), depth=4)),
+            ("hakrawler", lambda: self.runner.hakrawler(list(ctx.live_hosts))),
+        ]
+        results = self._run_stage("Deep Crawling", "🕷️", Theme.STAGE_URL, tools, ctx)
+        for r in results.values():
+            if r:
+                ctx.urls.update(r)
+        
+        # URL discovery
+        clean = strip_protocol(ctx.target)
+        tools = [
+            ("gau", lambda: self.runner.gau(clean)),
+            ("waybackurls", lambda: self.runner.waybackurls(clean)),
+        ]
+        results = self._run_stage("URL Archives", "🔗", Theme.STAGE_URL, tools, ctx)
+        for r in results.values():
+            if r:
+                ctx.urls.update(r)
+        
+        ctx.js_files = {u for u in ctx.urls if '.js' in u}
+        if ctx.urls:
+            save_list(ctx.output_dir / "urls.txt", ctx.urls)
+            save_list(ctx.output_dir / "js_files.txt", ctx.js_files)
+            self._stage_done("urls", len(ctx.urls))
+        
+        # JS Analysis
+        tools = [("getJS", lambda: self.runner.getjs(list(ctx.live_hosts)))]
+        results = self._run_stage("JS Analysis", "📜", Theme.STAGE_JS, tools, ctx)
+        more_js = results.get("getJS", set())
+        ctx.js_files.update(more_js)
+        
+        # Content discovery
+        wordlist = WORDLISTS_DIR / "common.txt"
+        if wordlist.exists() and is_installed("ffuf"):
+            ensure_dir(ctx.output_dir / "content")
+            for target in list(ctx.live_hosts)[:3]:
+                self.runner.ffuf(target, ctx.output_dir / "content", wordlist)
+        
+        # Screenshots
+        tools = [("gowitness", lambda: self.runner.gowitness(list(ctx.live_hosts), ctx.output_dir / "screenshots"))]
+        self._run_stage("Screenshots", "📸", Theme.STAGE_SCREEN, tools, ctx)
+        
+        # Vuln scan (focused)
+        tools = [("nuclei", lambda: self.runner.nuclei(list(ctx.live_hosts), ctx.output_dir / "nuclei.json", "critical,high,medium"))]
+        results = self._run_stage("Vulnerability Scan", "🎯", Theme.STAGE_VULN, tools, ctx)
+        ctx.vulnerabilities = results.get("nuclei", [])
+        if ctx.vulnerabilities:
+            self._stage_done("vulns", len(ctx.vulnerabilities), is_vuln=True)
         
         return ctx
     
-    def _stage_dns(self, ctx: ScanContext) -> ScanContext:
-        """DNS resolution"""
+    def _pipeline_fast(self, ctx: ScanContext) -> ScanContext:
+        """Quick scan - minimal tools, maximum speed"""
+        
+        # Fast subdomain enum (only subfinder + crt.sh)
+        tools = [
+            ("subfinder", lambda: self.runner.subfinder(ctx.target)),
+            ("crt.sh", lambda: self.runner.crtsh(ctx.target)),
+        ]
+        results = self._run_stage("Quick Subdomain Scan", "🔍", Theme.STAGE_SUBDOMAIN, tools, ctx)
+        for r in results.values():
+            if r:
+                ctx.subdomains.update(r)
+        ctx.subdomains = {s.lower() for s in ctx.subdomains if ctx.target in s.lower()}
+        if ctx.subdomains:
+            save_list(ctx.output_dir / "subdomains.txt", ctx.subdomains)
+            self._stage_done("subdomains", len(ctx.subdomains))
+        
         if not ctx.subdomains:
             return ctx
         
-        logger.info("\n[STAGE 2] DNS Resolution")
+        # HTTP probe only (skip DNS and ports)
+        tools = [("httpx", lambda: self.runner.httpx(list(ctx.subdomains)[:100]))]
+        results = self._run_stage("HTTP Probing", "🌐", Theme.STAGE_HTTP, tools, ctx)
+        live_result = results.get("httpx", (set(), {}))
+        ctx.live_hosts, ctx.technologies = live_result
+        if ctx.live_hosts:
+            save_list(ctx.output_dir / "live_hosts.txt", ctx.live_hosts)
+            self._stage_done("live", len(ctx.live_hosts))
         
-        if is_installed("dnsx"):
-            logger.info("  → dnsx")
-            
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write('\n'.join(ctx.subdomains))
-                temp_file = f.name
-            
-            try:
-                code, out, _ = self._cmd(
-                    ["dnsx", "-l", temp_file, "-a", "-resp", "-json", "-silent"], 600
-                )
-                if code == 0:
-                    for line in out.split('\n'):
-                        if line.strip():
-                            try:
-                                data = json.loads(line)
-                                host = data.get("host", "")
-                                ips = data.get("a", [])
-                                if host and ips:
-                                    ctx.resolved[host] = ips
-                            except:
-                                pass
-            finally:
-                Path(temp_file).unlink(missing_ok=True)
-        
-        logger.info(f"  ✓ Resolved: {len(ctx.resolved)}")
-        resolved_file = ctx.output_dir / "resolved.txt"
-        save_list(resolved_file, 
-                  [f"{h}: {', '.join(ips)}" for h, ips in ctx.resolved.items()])
-        
-        # Discord notification
-        self.notifier.stage_complete("dns", ctx.target, len(ctx.resolved), resolved_file)
-        
-        return ctx
-    
-    def _stage_ports(self, ctx: ScanContext) -> ScanContext:
-        """Port scanning"""
-        hosts = list(ctx.resolved.keys()) if ctx.resolved else list(ctx.subdomains)[:100]
-        if not hosts:
-            return ctx
-        
-        logger.info("\n[STAGE 3] Port Scanning")
-        
-        if is_installed("naabu"):
-            logger.info(f"  → naabu ({len(hosts)} hosts)")
-            
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write('\n'.join(hosts))
-                temp_file = f.name
-            
-            try:
-                cmd = [
-                    "naabu", "-l", temp_file, "-json", "-silent", "-top-ports", "1000",
-                    "-rate", str(self.rate_limit), "-c", str(min(self.threads, 25))
-                ]
-                code, out, _ = self._cmd(cmd, 1800)
-                if code == 0:
-                    for line in out.split('\n'):
-                        if line.strip():
-                            try:
-                                data = json.loads(line)
-                                host = data.get("host", "")
-                                port = data.get("port", 0)
-                                if host and port:
-                                    if host not in ctx.ports:
-                                        ctx.ports[host] = []
-                                    ctx.ports[host].append(port)
-                            except:
-                                pass
-            finally:
-                Path(temp_file).unlink(missing_ok=True)
-        
-        total_ports = sum(len(p) for p in ctx.ports.values())
-        logger.info(f"  ✓ Open ports: {total_ports}")
-        ports_file = ctx.output_dir / "ports.txt"
-        save_list(ports_file,
-                  [f"{h}:{p}" for h, ports in ctx.ports.items() for p in ports])
-        
-        # Discord notification
-        self.notifier.stage_complete("ports", ctx.target, total_ports, ports_file)
-        
-        return ctx
-    
-    def _stage_ports_light(self, ctx: ScanContext) -> ScanContext:
-        """Lightweight port scanning for NARROW mode - common web ports only"""
-        hosts = list(ctx.resolved.keys()) if ctx.resolved else list(ctx.subdomains)
-        if not hosts:
-            return ctx
-        
-        logger.info("\n[STAGE 2] Port Scanning (common web ports)")
-        
-        # Common web ports
-        web_ports = "80,443,8080,8443,8000,8888,3000,5000,9000,9443"
-        
-        if is_installed("naabu"):
-            logger.info(f"  → naabu ({len(hosts)} hosts, web ports only)")
-            
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write('\n'.join(hosts))
-                temp_file = f.name
-            
-            try:
-                cmd = [
-                    "naabu", "-l", temp_file, "-json", "-silent", "-p", web_ports,
-                    "-rate", str(self.rate_limit), "-c", str(min(self.threads, 10))
-                ]
-                code, out, _ = self._cmd(cmd, 300)
-                if code == 0:
-                    for line in out.split('\n'):
-                        if line.strip():
-                            try:
-                                data = json.loads(line)
-                                host = data.get("host", "")
-                                port = data.get("port", 0)
-                                if host and port:
-                                    if host not in ctx.ports:
-                                        ctx.ports[host] = []
-                                    ctx.ports[host].append(port)
-                            except:
-                                pass
-            finally:
-                Path(temp_file).unlink(missing_ok=True)
-        
-        total_ports = sum(len(p) for p in ctx.ports.values())
-        logger.info(f"  ✓ Open ports: {total_ports}")
-        
-        return ctx
-    
-    def _stage_http(self, ctx: ScanContext) -> ScanContext:
-        """HTTP probing with tech detection"""
-        targets = set(ctx.subdomains)
-        for host, ports in ctx.ports.items():
-            for port in ports:
-                if port not in (80, 443):
-                    targets.add(f"{host}:{port}")
-        
-        if not targets:
-            return ctx
-        
-        logger.info("\n[STAGE 4] HTTP Probing")
-        
-        if is_installed("httpx"):
-            logger.info(f"  → httpx ({len(targets)} targets)")
-            
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write('\n'.join(targets))
-                temp_file = f.name
-            
-            try:
-                code, out, _ = self._cmd([
-                    "httpx", "-l", temp_file, "-json", "-silent",
-                    "-status-code", "-title", "-tech-detect", "-follow-redirects",
-                    "-rate-limit", str(self.rate_limit), "-threads", str(min(self.threads, 25))
-                ], 1800)
-                
-                if code == 0:
-                    for line in out.split('\n'):
-                        if line.strip():
-                            try:
-                                data = json.loads(line)
-                                url = data.get("url", "")
-                                if url:
-                                    ctx.live_hosts.add(url)
-                                    if data.get("tech"):
-                                        ctx.technologies[url] = data["tech"]
-                            except:
-                                pass
-            finally:
-                Path(temp_file).unlink(missing_ok=True)
-        
-        logger.info(f"  ✓ Live hosts: {len(ctx.live_hosts)}")
-        live_file = ctx.output_dir / "live_hosts.txt"
-        tech_file = ctx.output_dir / "technologies.txt"
-        save_list(live_file, ctx.live_hosts)
-        save_list(tech_file,
-                  [f"{h}: {', '.join(t)}" for h, t in ctx.technologies.items()])
-        
-        # Discord notification
-        self.notifier.stage_complete("http", ctx.target, len(ctx.live_hosts), live_file)
-        
-        return ctx
-    
-    def _stage_urls(self, ctx: ScanContext) -> ScanContext:
-        """URL discovery from archives (passive first, then active)"""
-        # Configurable limit, default to all live hosts
-        max_targets = 100  # Reasonable limit to avoid overload
-        targets = list(ctx.live_hosts)[:max_targets] if ctx.live_hosts else [ctx.target]
-        
-        logger.info("\n[STAGE 5] URL Discovery")
-        
-        all_urls = set()
-        clean_domain = strip_protocol(ctx.target)
-        
-        # === PASSIVE TOOLS FIRST (archive-based) ===
-        
-        # GAU - expects domain without protocol
-        if is_installed("gau"):
-            logger.info("  → gau")
-            code, out, _ = self._cmd(["gau", "--subs", clean_domain], 300)
-            if code == 0:
-                urls = [l.strip() for l in out.split('\n') if l.strip()]
-                all_urls.update(urls)
-                logger.info(f"    Found {len(urls)}")
-        
-        # Waybackurls - expects input via STDIN
-        if is_installed("waybackurls"):
-            logger.info("  → waybackurls")
-            code, out, _ = self._cmd(["waybackurls"], 300, stdin_input=clean_domain)
-            if code == 0:
-                urls = [l.strip() for l in out.split('\n') if l.strip()]
-                all_urls.update(urls)
-                logger.info(f"    Found {len(urls)}")
-        
-        # Waymore
-        if is_installed("waymore"):
-            logger.info("  → waymore")
-            code, out, _ = self._cmd(["waymore", "-i", clean_domain, "-mode", "U"], 600)
-            if code == 0:
-                urls = [l.strip() for l in out.split('\n') if l.strip()]
-                all_urls.update(urls)
-                logger.info(f"    Found {len(urls)}")
-        
-        # === ACTIVE TOOLS (crawlers) ===
-        
-        # Katana - active crawler
-        if is_installed("katana") and ctx.live_hosts:
-            logger.info("  → katana")
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write('\n'.join(list(ctx.live_hosts)[:20]))
-                temp_file = f.name
-            
-            try:
-                code, out, _ = self._cmd(
-                    ["katana", "-list", temp_file, "-silent", "-d", "2",
-                     "-rate-limit", str(self.rate_limit), "-concurrency", str(min(self.threads, 10))], 900
-                )
-                if code == 0:
-                    urls = [l.strip() for l in out.split('\n') if l.strip()]
-                    all_urls.update(urls)
-                    logger.info(f"    Found {len(urls)}")
-            finally:
-                Path(temp_file).unlink(missing_ok=True)
-        
-        ctx.urls = all_urls
-        ctx.js_files = {u for u in all_urls if u.endswith('.js') or ('.js?' in u)}
-        
-        logger.info(f"  ✓ Total URLs: {len(ctx.urls)}, JS files: {len(ctx.js_files)}")
-        urls_file = ctx.output_dir / "urls.txt"
-        js_file = ctx.output_dir / "js_files.txt"
-        save_list(urls_file, ctx.urls)
-        save_list(js_file, ctx.js_files)
-        
-        # Discord notification
-        self.notifier.stage_complete("urls", ctx.target, len(ctx.urls), urls_file)
-        
-        return ctx
-    
-    def _stage_crawl(self, ctx: ScanContext) -> ScanContext:
-        """Deep crawling for narrow mode"""
         if not ctx.live_hosts:
             return ctx
         
-        logger.info("\n[STAGE] Deep Crawling")
-        
-        all_urls = set(ctx.urls)
-        
-        # Katana deep
-        if is_installed("katana"):
-            logger.info("  → katana (depth=3)")
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write('\n'.join(ctx.live_hosts))
-                temp_file = f.name
-            
-            try:
-                code, out, _ = self._cmd(
-                    ["katana", "-list", temp_file, "-silent", "-d", "3", "-jc"], 1200
-                )
-                if code == 0:
-                    urls = [l.strip() for l in out.split('\n') if l.strip()]
-                    all_urls.update(urls)
-            finally:
-                Path(temp_file).unlink(missing_ok=True)
-        
-        # Hakrawler
-        if is_installed("hakrawler"):
-            logger.info("  → hakrawler")
-            for target in list(ctx.live_hosts)[:3]:
-                code, out, _ = self._cmd(["hakrawler", "-url", target, "-plain"], 300)
-                if code == 0:
-                    urls = [l.strip() for l in out.split('\n') if l.strip()]
-                    all_urls.update(urls)
-        
-        ctx.urls = all_urls
-        ctx.js_files = {u for u in all_urls if '.js' in u}
-        
-        logger.info(f"  ✓ Total URLs: {len(ctx.urls)}")
-        urls_file = ctx.output_dir / "urls.txt"
-        save_list(urls_file, ctx.urls)
-        
-        # Discord notification
-        self.notifier.stage_complete("crawl", ctx.target, len(ctx.urls), urls_file)
+        # Quick vuln scan (critical + high only)
+        tools = [("nuclei", lambda: self.runner.nuclei(list(ctx.live_hosts)[:50], ctx.output_dir / "nuclei.json", "critical,high"))]
+        results = self._run_stage("Quick Vuln Scan", "🎯", Theme.STAGE_VULN, tools, ctx)
+        ctx.vulnerabilities = results.get("nuclei", [])
+        if ctx.vulnerabilities:
+            self._stage_done("vulns", len(ctx.vulnerabilities), is_vuln=True)
         
         return ctx
     
-    def _stage_js(self, ctx: ScanContext) -> ScanContext:
-        """JavaScript analysis"""
-        if not ctx.js_files and not ctx.live_hosts:
-            return ctx
-        
-        logger.info("\n[STAGE 6] JS Analysis")
-        
-        # GetJS
-        if is_installed("getJS") and ctx.live_hosts:
-            logger.info("  → getJS")
-            for host in list(ctx.live_hosts)[:10]:
-                code, out, _ = self._cmd(["getJS", "--url", host, "--complete"], 120)
-                if code == 0:
-                    js = [l.strip() for l in out.split('\n') if l.strip() and '.js' in l]
-                    ctx.js_files.update(js)
-        
-        # xnLinkFinder (https://github.com/xnl-h4ck3r/xnLinkFinder)
-        if is_installed("xnLinkFinder") and (ctx.js_files or ctx.live_hosts):
-            logger.info("  → xnLinkFinder")
-            
-            # xnLinkFinder can process URLs directly and find endpoints, params, etc.
-            targets_for_linkfinder = list(ctx.live_hosts)[:10] if ctx.live_hosts else []
-            
-            if targets_for_linkfinder:
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                    f.write('\n'.join(targets_for_linkfinder))
-                    temp_file = f.name
-                
-                try:
-                    # xnLinkFinder with depth 2, finding endpoints and parameters
-                    output_dir = ctx.output_dir / "linkfinder"
-                    ensure_dir(output_dir)
-                    
-                    code, out, _ = self._cmd([
-                        "xnLinkFinder", "-i", temp_file, 
-                        "-o", str(output_dir / "endpoints.txt"),
-                        "-op", str(output_dir / "parameters.txt"),
-                        "-d", "2",  # Depth
-                        "-sp", str(ctx.output_dir),  # Scope prefix
-                        "--include", ctx.target,  # Stay in scope
-                    ], 600)
-                    
-                    if code == 0:
-                        # Parse output files
-                        endpoints_file = output_dir / "endpoints.txt"
-                        if endpoints_file.exists():
-                            endpoints = load_list(endpoints_file)
-                            ctx.endpoints.update(endpoints)
-                            logger.info(f"    Found {len(endpoints)} endpoints")
-                        
-                        params_file = output_dir / "parameters.txt"
-                        if params_file.exists():
-                            params = load_list(params_file)
-                            logger.info(f"    Found {len(params)} parameters")
-                finally:
-                    Path(temp_file).unlink(missing_ok=True)
-        
-        # Fallback to legacy linkfinder if xnLinkFinder not available
-        elif is_installed("linkfinder") and ctx.js_files:
-            logger.info("  → linkfinder (legacy)")
-            for js_url in list(ctx.js_files)[:20]:
-                code, out, _ = self._cmd(["linkfinder", "-i", js_url, "-o", "cli"], 60)
-                if code == 0:
-                    endpoints = [l.strip() for l in out.split('\n') if l.strip()]
-                    ctx.endpoints.update(endpoints)
-        
-        logger.info(f"  ✓ JS files: {len(ctx.js_files)}, Endpoints: {len(ctx.endpoints)}")
-        js_file = ctx.output_dir / "js_files.txt"
-        endpoints_file = ctx.output_dir / "endpoints.txt"
-        save_list(js_file, ctx.js_files)
-        save_list(endpoints_file, ctx.endpoints)
-        
-        # Discord notification
-        self.notifier.stage_complete("js", ctx.target, len(ctx.endpoints), endpoints_file)
-        
-        return ctx
-    
-    def _stage_content(self, ctx: ScanContext) -> ScanContext:
-        """Content discovery for narrow mode"""
-        if not ctx.live_hosts:
-            return ctx
-        
-        logger.info("\n[STAGE] Content Discovery")
-        
-        wordlist = WORDLISTS_DIR / "common.txt"
-        if not wordlist.exists():
-            logger.warning("  Wordlist not found, skipping")
-            return ctx
-        
-        if is_installed("ffuf"):
-            ensure_dir(ctx.output_dir / "content")
-            
-            for target in list(ctx.live_hosts)[:3]:
-                logger.info(f"  → ffuf: {target}")
-                output_file = ctx.output_dir / "content" / f"{sanitize_target(target)}.json"
-                
-                self._cmd([
-                    "ffuf", "-u", f"{target}/FUZZ", "-w", str(wordlist),
-                    "-o", str(output_file), "-of", "json",
-                    "-mc", "200,201,204,301,302,307,401,403,405",
-                    "-t", "50", "-s"
-                ], 600)
-        
-        return ctx
-    
-    def _stage_screenshots(self, ctx: ScanContext) -> ScanContext:
-        """Take screenshots"""
-        if not ctx.live_hosts:
-            return ctx
-        
-        logger.info("\n[STAGE 7] Screenshots")
-        
-        ss_dir = ctx.output_dir / "screenshots"
-        ensure_dir(ss_dir)
-        
-        if is_installed("gowitness"):
-            logger.info(f"  → gowitness ({len(ctx.live_hosts)} hosts)")
-            
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write('\n'.join(ctx.live_hosts))
-                temp_file = f.name
-            
-            try:
-                self._cmd([
-                    "gowitness", "file", "-f", temp_file, 
-                    "-P", str(ss_dir), "--timeout", "10"
-                ], 3600)
-            finally:
-                Path(temp_file).unlink(missing_ok=True)
-        
-        elif is_installed("eyewitness"):
-            logger.info(f"  → eyewitness ({len(ctx.live_hosts)} hosts)")
-            
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write('\n'.join(ctx.live_hosts))
-                temp_file = f.name
-            
-            try:
-                self._cmd([
-                    "eyewitness", "-f", temp_file, 
-                    "-d", str(ss_dir), "--no-prompt"
-                ], 3600)
-            finally:
-                Path(temp_file).unlink(missing_ok=True)
-        
-        logger.info("  ✓ Screenshots saved")
-        return ctx
-    
-    def _stage_vulns(self, ctx: ScanContext, focused: bool = False) -> ScanContext:
-        """Vulnerability scanning with nuclei"""
-        targets = list(ctx.live_hosts) if ctx.live_hosts else list(ctx.subdomains)[:50]
-        if not targets:
-            return ctx
-        
-        logger.info("\n[STAGE 8] Vulnerability Scanning")
-        
-        if is_installed("nuclei"):
-            logger.info(f"  → nuclei ({len(targets)} targets)")
-            
-            vuln_dir = ctx.output_dir / "vulnerabilities"
-            ensure_dir(vuln_dir)
-            output_file = vuln_dir / "nuclei.json"
-            
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write('\n'.join(targets))
-                temp_file = f.name
-            
-            try:
-                cmd = [
-                    "nuclei", "-l", temp_file, 
-                    "-o", str(output_file), "-jsonl", "-silent",
-                    "-rate-limit", str(self.rate_limit), "-c", str(min(self.threads, 25)),
-                    "-nh"  # No update check, use installed templates
-                ]
-                
-                if focused:
-                    cmd.extend(["-severity", "critical,high,medium"])
-                else:
-                    cmd.extend(["-severity", "critical,high,medium,low"])
-                
-                self._cmd(cmd, 7200)
-                
-                # Parse results
-                if output_file.exists():
-                    with open(output_file) as f:
-                        for line in f:
-                            if line.strip():
-                                try:
-                                    data = json.loads(line)
-                                    vuln = {
-                                        "host": data.get("host", ""),
-                                        "name": data.get("info", {}).get("name", ""),
-                                        "severity": data.get("info", {}).get("severity", "info"),
-                                        "template": data.get("template-id", ""),
-                                    }
-                                    ctx.vulnerabilities.append(vuln)
-                                    
-                                    # Notify critical/high
-                                    if vuln["severity"] in ("critical", "high"):
-                                        self.notifier.vulnerability(
-                                            vuln["name"], vuln["severity"], vuln["host"]
-                                        )
-                                except:
-                                    pass
-            finally:
-                Path(temp_file).unlink(missing_ok=True)
-        
-        logger.info(f"  ✓ Vulnerabilities: {len(ctx.vulnerabilities)}")
-        
-        # Save vuln results and notify
-        vulns_file = ctx.output_dir / "vulnerabilities.json"
-        with open(vulns_file, 'w') as f:
-            json.dump(ctx.vulnerabilities, f, indent=2)
-        
-        # Discord notification
-        self.notifier.stage_complete("vulns", ctx.target, len(ctx.vulnerabilities), vulns_file)
-        
-        return ctx
+    def _stage_done(self, name: str, count: int, is_vuln: bool = False):
+        """Print stage completion message"""
+        if console and not self.quiet:
+            color = "red" if is_vuln and count > 0 else "green"
+            console.print(f"  [{color}]✓[/] {name}: [bold]{count}[/]")
     
     def _save_results(self, ctx: ScanContext):
-        """Save final results"""
+        """Save scan summary"""
         summary = {
             "target": ctx.target,
             "mode": ctx.mode.value,
@@ -1176,79 +866,311 @@ class MacaronEngine:
                 "ports": sum(len(p) for p in ctx.ports.values()),
                 "urls": len(ctx.urls),
                 "js_files": len(ctx.js_files),
-                "endpoints": len(ctx.endpoints),
                 "vulnerabilities": len(ctx.vulnerabilities)
             },
             "vulnerabilities": ctx.vulnerabilities,
             "errors": ctx.errors
         }
-        
         with open(ctx.output_dir / "summary.json", 'w') as f:
             json.dump(summary, f, indent=2)
+    
+    def _print_summary(self, stats: Dict):
+        """Print beautiful scan summary"""
+        if not console or self.quiet:
+            return
+        
+        table = Table(title="Scan Results", box=box.ROUNDED, border_style="cyan")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="bold white", justify="right")
+        
+        table.add_row("Mode", stats["mode"])
+        table.add_row("Duration", stats["duration"])
+        table.add_row("Subdomains", str(stats["subdomains"]))
+        table.add_row("Live Hosts", str(stats["live_hosts"]))
+        table.add_row("Open Ports", str(stats["ports"]))
+        table.add_row("URLs", str(stats["urls"]))
+        
+        vuln_style = "bold red" if stats["vulnerabilities"] > 0 else "green"
+        table.add_row("Vulnerabilities", f"[{vuln_style}]{stats['vulnerabilities']}[/]")
+        
+        console.print()
+        console.print(table)
+        console.print(f"\n[dim]Results saved to: {DATA_DIR}[/]")
+
+# ============== DISCORD NOTIFIER ==============
+
+class DiscordNotifier:
+    """Discord webhook notifications"""
+    
+    def __init__(self):
+        config = load_config().get("discord", {})
+        self.enabled = config.get("enabled", False)
+        self.webhook_url = config.get("webhook_url", "")
+    
+    def _send(self, title: str, msg: str, color: int = 0x3498db):
+        if not self.enabled or not self.webhook_url:
+            return
+        try:
+            import urllib.request
+            payload = json.dumps({
+                "embeds": [{
+                    "title": title,
+                    "description": msg[:4000],
+                    "color": color,
+                    "footer": {"text": "Macaron v2"},
+                    "timestamp": get_timestamp()
+                }]
+            }).encode()
+            req = urllib.request.Request(self.webhook_url, data=payload, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10)
+        except:
+            pass
+    
+    def scan_start(self, targets: List[str], mode: str):
+        self._send("🚀 Scan Started", f"**Mode:** {mode}\n**Targets:** {', '.join(targets[:5])}", 0x3498db)
+    
+    def scan_complete(self, stats: Dict):
+        self._send("✅ Scan Complete", f"**Duration:** {stats.get('duration')}\n**Subdomains:** {stats.get('subdomains')}\n**Live:** {stats.get('live_hosts')}\n**Vulns:** {stats.get('vulnerabilities')}", 0x2ecc71)
+    
+    def vulnerability(self, name: str, severity: str, target: str):
+        colors = {"critical": 0xff0000, "high": 0xff6600, "medium": 0xffff00}
+        self._send(f"⚠️ {severity.upper()}: {name}", f"**Target:** {target}", colors.get(severity.lower(), 0x7289da))
 
 # ============== CLI COMMANDS ==============
 
 def cmd_scan(args):
     """Run a scan"""
     targets = []
-    
     if args.target:
-        targets = args.target
+        targets = args.target if isinstance(args.target, list) else [args.target]
     elif args.file:
         targets = load_list(Path(args.file))
     elif args.stdin:
         targets = [l.strip() for l in sys.stdin if l.strip()]
     
     if not targets:
-        logger.error("No targets provided")
+        console.print("[red]✗ No targets provided[/]") if console else print("No targets")
         return 1
     
-    mode = ScanMode.NARROW if args.mode == "narrow" else ScanMode.WIDE
-    use_proxy = not args.no_proxy
+    # Mode selection
+    if args.fast:
+        mode = Mode.FAST
+    elif args.narrow:
+        mode = Mode.NARROW
+    else:
+        mode = Mode.WIDE
     
-    # Determine rate limit
-    rate_limit = args.rate_limit
-    threads = args.threads
-    if args.slow:
-        rate_limit = 10
-        threads = 5
-        logger.info("Slow mode enabled: rate=10 req/s, threads=5")
+    # Rate limiting
+    rate = 10 if args.slow else (args.rate or 100)
+    threads = 5 if args.slow else (args.threads or 25)
     
-    engine = MacaronEngine(use_proxy=use_proxy, threads=threads, rate_limit=rate_limit)
-    stats = engine.scan(targets, mode=mode, resume=args.resume)
+    engine = MacaronEngine(
+        use_proxy=not args.no_proxy,
+        rate=rate,
+        threads=threads,
+        quiet=args.quiet
+    )
     
-    # Print summary
-    print("\n" + "="*60)
-    print("SCAN COMPLETE")
-    print("="*60)
-    print(f"Mode:            {stats['mode']}")
-    print(f"Duration:        {stats['duration']}")
-    print(f"Subdomains:      {stats['subdomains']}")
-    print(f"Live Hosts:      {stats['live_hosts']}")
-    print(f"Open Ports:      {stats['ports']}")
-    print(f"URLs:            {stats['urls']}")
-    print(f"Vulnerabilities: {stats['vulnerabilities']}")
-    print(f"\nResults saved to: {DATA_DIR}")
+    stats = engine.scan(targets, mode=mode)
+    return 0 if stats.get("status") == "completed" else 1
+
+def cmd_status(args):
+    """Show status"""
+    if not console:
+        print("Status requires rich library")
+        return 1
+    
+    console.print(Panel(BANNER.format(version=VERSION), border_style="cyan", box=box.DOUBLE))
+    
+    # Data summary
+    if DATA_DIR.exists():
+        table = Table(title="Scan Data", box=box.ROUNDED)
+        table.add_column("Domain", style="cyan")
+        table.add_column("Subdomains", justify="right")
+        table.add_column("Live", justify="right")
+        table.add_column("Vulns", justify="right", style="red")
+        
+        for d in sorted(DATA_DIR.iterdir())[:10]:
+            if d.is_dir():
+                subs = len(load_list(d / "subdomains.txt"))
+                live = len(load_list(d / "live_hosts.txt"))
+                vulns = 0
+                vuln_file = d / "nuclei.json"
+                if vuln_file.exists():
+                    with open(vuln_file) as f:
+                        vulns = len([l for l in f if l.strip()])
+                table.add_row(d.name, str(subs), str(live), str(vulns))
+        
+        console.print(table)
+    else:
+        console.print("[dim]No scan data yet[/]")
     
     return 0
 
-def cmd_install(args):
-    """Install reconnaissance tools"""
-    print("Installing reconnaissance tools...")
-    print("This requires sudo and may take a while.\n")
-    
-    # Check for sudo
-    if os.geteuid() != 0:
-        print("Please run with sudo: sudo macaron install")
+def cmd_show(args):
+    """Show results"""
+    if not console:
         return 1
     
-    # Install Go
-    subprocess.run(["apt-get", "update", "-qq"], check=False)
-    subprocess.run(["apt-get", "install", "-y", "-qq", 
-                   "golang-go", "python3-pip", "git", "curl", "wget", 
-                   "unzip", "proxychains4", "jq"], check=False)
+    domain = args.domain
+    what = args.what or "all"
+    limit = args.limit or 50
     
-    # Go tools
+    targets = []
+    if DATA_DIR.exists():
+        for d in DATA_DIR.iterdir():
+            if d.is_dir() and (not domain or domain.lower() in d.name.lower()):
+                targets.append(d)
+    
+    if not targets:
+        console.print(f"[yellow]No results found[/]")
+        return 1
+    
+    for target_dir in targets:
+        console.print(f"\n[bold cyan]{'═'*50}[/]")
+        console.print(f"[bold cyan] {target_dir.name}[/]")
+        console.print(f"[bold cyan]{'═'*50}[/]")
+        
+        files = {
+            "subdomains": ("subdomains.txt", "🔍"),
+            "live": ("live_hosts.txt", "🌐"),
+            "ports": ("ports.txt", "🔌"),
+            "urls": ("urls.txt", "🔗"),
+            "js": ("js_files.txt", "📜"),
+        }
+        
+        for key, (filename, emoji) in files.items():
+            if what not in ["all", key]:
+                continue
+            filepath = target_dir / filename
+            if filepath.exists():
+                items = load_list(filepath)
+                console.print(f"\n[bold]{emoji} {key.upper()}[/] ({len(items)})")
+                for item in items[:limit]:
+                    console.print(f"  [dim]{item}[/]")
+                if len(items) > limit:
+                    console.print(f"  [dim]... and {len(items) - limit} more[/]")
+        
+        # Vulnerabilities
+        if what in ["all", "vulns"]:
+            vuln_file = target_dir / "nuclei.json"
+            if vuln_file.exists():
+                vulns = []
+                with open(vuln_file) as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                vulns.append(json.loads(line))
+                            except:
+                                pass
+                if vulns:
+                    console.print(f"\n[bold red]🎯 VULNERABILITIES[/] ({len(vulns)})")
+                    sev_colors = {"critical": "bold red", "high": "red", "medium": "yellow", "low": "green"}
+                    for v in vulns[:limit]:
+                        sev = v.get("info", {}).get("severity", "info")
+                        name = v.get("info", {}).get("name", v.get("template-id", ""))
+                        color = sev_colors.get(sev, "dim")
+                        console.print(f"  [{color}][{sev.upper():8}][/] {name}")
+    
+    return 0
+
+def cmd_tools(args):
+    """List tools"""
+    if not console:
+        return 1
+    
+    categories = {
+        "Subdomain": ["subfinder", "amass", "assetfinder", "findomain"],
+        "DNS": ["dnsx", "massdns"],
+        "Ports": ["naabu", "masscan", "nmap"],
+        "HTTP": ["httpx", "httprobe"],
+        "URLs": ["gau", "waybackurls", "katana", "hakrawler"],
+        "JS": ["getJS"],
+        "Content": ["ffuf", "feroxbuster"],
+        "Vulns": ["nuclei"],
+        "Screenshots": ["gowitness", "eyewitness"],
+        "Utils": ["proxychains4", "jq", "curl"]
+    }
+    
+    table = Table(title="Installed Tools", box=box.ROUNDED, border_style="cyan")
+    table.add_column("Category", style="cyan")
+    table.add_column("Tool")
+    table.add_column("Status", justify="center")
+    
+    total, installed = 0, 0
+    for cat, tools in categories.items():
+        for tool in tools:
+            total += 1
+            if is_installed(tool):
+                installed += 1
+                table.add_row(cat, tool, "[green]✓[/]")
+            else:
+                table.add_row(cat, tool, "[red]✗[/]")
+    
+    console.print(table)
+    pct = int((installed / total) * 100) if total else 0
+    color = "green" if pct >= 70 else ("yellow" if pct >= 40 else "red")
+    console.print(f"\n[{color}]{installed}/{total} ({pct}%) installed[/]")
+    
+    if installed < 10:
+        console.print("\n[yellow]Tip:[/] Run 'sudo macaron -I' to install tools")
+    
+    return 0
+
+def cmd_config(args):
+    """Config management"""
+    config = load_config()
+    
+    if args.webhook:
+        config["discord"]["webhook_url"] = args.webhook
+        config["discord"]["enabled"] = True
+        save_config(config)
+        if console:
+            console.print("[green]✓ Discord webhook configured[/]")
+        if args.test:
+            DiscordNotifier().scan_start(["test.com"], "test")
+            console.print("[green]✓ Test notification sent[/]") if console else None
+    elif args.show:
+        if console:
+            console.print_json(json.dumps(config, indent=2))
+        else:
+            print(json.dumps(config, indent=2))
+    
+    return 0
+
+def cmd_export(args):
+    """Export results"""
+    output = Path(args.output) if args.output else Path(f"macaron_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    
+    data = {"exported_at": get_timestamp(), "targets": {}}
+    
+    if DATA_DIR.exists():
+        for d in DATA_DIR.iterdir():
+            if d.is_dir():
+                if args.domain and args.domain not in d.name:
+                    continue
+                target_data = {"name": d.name}
+                for f in ["subdomains.txt", "live_hosts.txt", "urls.txt", "ports.txt"]:
+                    fp = d / f
+                    if fp.exists():
+                        target_data[f.replace(".txt", "")] = load_list(fp)
+                data["targets"][d.name] = target_data
+    
+    with open(output, 'w') as f:
+        json.dump(data, f, indent=2)
+    
+    console.print(f"[green]✓ Exported to {output}[/]") if console else print(f"Exported to {output}")
+    return 0
+
+def cmd_install(args):
+    """Install tools"""
+    if os.geteuid() != 0:
+        console.print("[red]✗ Please run with sudo[/]") if console else print("Run with sudo")
+        return 1
+    
+    console.print("[cyan]Installing reconnaissance tools...[/]") if console else print("Installing...")
+    
+    # Install Go tools
     go_tools = [
         "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
         "github.com/projectdiscovery/httpx/cmd/httpx@latest",
@@ -1256,7 +1178,6 @@ def cmd_install(args):
         "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
         "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
         "github.com/projectdiscovery/katana/cmd/katana@latest",
-        "github.com/projectdiscovery/chaos-client/cmd/chaos@latest",
         "github.com/tomnomnom/assetfinder@latest",
         "github.com/tomnomnom/waybackurls@latest",
         "github.com/sensepost/gowitness@latest",
@@ -1270,7 +1191,8 @@ def cmd_install(args):
     os.environ["PATH"] = os.environ["PATH"] + ":" + str(Path.home() / "go" / "bin")
     
     for tool in go_tools:
-        print(f"  Installing {tool.split('/')[-1].split('@')[0]}...")
+        name = tool.split('/')[-1].split('@')[0]
+        console.print(f"  Installing {name}...") if console else print(f"Installing {name}")
         subprocess.run(["go", "install", tool], capture_output=True)
     
     # Copy to /usr/local/bin
@@ -1279,762 +1201,88 @@ def cmd_install(args):
         for f in go_bin.iterdir():
             shutil.copy(str(f), "/usr/local/bin/")
     
-    # Python tools
-    print("  Installing Python tools...")
-    subprocess.run(["pip3", "install", "-q", "waymore"], capture_output=True)
-    
-    # xnLinkFinder (better maintained than legacy linkfinder)
-    print("  Installing xnLinkFinder...")
-    subprocess.run([
-        "pip3", "install", "-q", "xnLinkFinder"
-    ], capture_output=True)
-    
-    # Findomain
-    if not is_installed("findomain"):
-        print("  Installing findomain...")
-        subprocess.run([
-            "bash", "-c",
-            "curl -sLO https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux.zip && "
-            "unzip -q -o findomain-linux.zip && chmod +x findomain && mv findomain /usr/local/bin/ && rm findomain-linux.zip"
-        ], capture_output=True)
-    
-    # Amass
-    if not is_installed("amass"):
-        print("  Installing amass...")
-        subprocess.run(["apt-get", "install", "-y", "-qq", "amass"], capture_output=True)
-    
-    # Nuclei templates
-    print("  Updating nuclei templates...")
-    subprocess.run(["nuclei", "-update-templates"], capture_output=True)
-    
-    # Download wordlists
-    print("  Downloading wordlists...")
-    ensure_dir(WORDLISTS_DIR)
-    if not (WORDLISTS_DIR / "common.txt").exists():
-        subprocess.run([
-            "curl", "-sL", 
-            "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt",
-            "-o", str(WORDLISTS_DIR / "common.txt")
-        ])
-    
-    print("\n✓ Installation complete!")
-    print("\nInstalled tools:")
-    
-    tools = ["subfinder", "amass", "assetfinder", "findomain", "httpx", "dnsx", 
-             "naabu", "nuclei", "katana", "gau", "waybackurls", "ffuf", "gowitness",
-             "hakrawler", "getJS", "waymore", "xnLinkFinder"]
-    
-    for tool in tools:
-        status = "✓" if is_installed(tool) else "✗"
-        print(f"  [{status}] {tool}")
-    
+    console.print("[green]✓ Installation complete![/]") if console else print("Done!")
     return 0
-
-def cmd_config(args):
-    """Configuration management"""
-    config = load_config()
-    
-    if args.action == "show":
-        print(json.dumps(config, indent=2))
-    
-    elif args.action == "set":
-        if not args.key or args.value is None:
-            print("Usage: macaron config set --key KEY --value VALUE")
-            return 1
-        
-        keys = args.key.split(".")
-        current = config
-        for k in keys[:-1]:
-            if k not in current:
-                current[k] = {}
-            current = current[k]
-        
-        try:
-            current[keys[-1]] = json.loads(args.value)
-        except:
-            current[keys[-1]] = args.value
-        
-        save_config(config)
-        print(f"Set {args.key} = {args.value}")
-    
-    elif args.action == "webhook":
-        if not args.url:
-            print("Usage: macaron config webhook --url URL")
-            return 1
-        
-        config["discord"]["webhook_url"] = args.url
-        config["discord"]["enabled"] = True
-        save_config(config)
-        print("Discord webhook configured")
-        
-        if args.test:
-            notifier = DiscordNotifier()
-            notifier.config = config["discord"]
-            notifier.enabled = True
-            notifier.webhook_url = args.url
-            notifier.send("🔧 Test", "Macaron is configured!", 0x3498db)
-            print("Test notification sent!")
-    
-    return 0
-
-def cmd_list(args):
-    """List targets, tools, or results"""
-    if args.what == "tools":
-        # Categorized tools for better visibility
-        tool_categories = {
-            "Subdomain Discovery": ["subfinder", "amass", "assetfinder", "findomain", "chaos"],
-            "DNS Resolution": ["dnsx", "massdns"],
-            "Port Scanning": ["naabu", "masscan", "nmap"],
-            "HTTP Probing": ["httpx", "httprobe"],
-            "URL Discovery": ["gau", "waymore", "waybackurls", "katana", "hakrawler"],
-            "JS Analysis": ["getJS", "xnLinkFinder", "secretfinder"],
-            "Content Discovery": ["ffuf", "feroxbuster", "dirsearch"],
-            "Vuln Scanning": ["nuclei", "nikto"],
-            "Screenshots": ["gowitness", "eyewitness"],
-            "Utilities": ["proxychains4", "jq", "curl"]
-        }
-        
-        total_installed = 0
-        total_tools = 0
-        
-        print("\n\033[1m=== INSTALLED TOOLS ===\033[0m\n")
-        
-        for category, tools in tool_categories.items():
-            installed = sum(1 for t in tools if is_installed(t))
-            total_installed += installed
-            total_tools += len(tools)
-            
-            print(f"\033[1;34m{category}\033[0m ({installed}/{len(tools)})")
-            for tool in tools:
-                if is_installed(tool):
-                    print(f"  \033[32m✓\033[0m {tool}")
-                else:
-                    print(f"  \033[31m✗\033[0m {tool}")
-            print()
-        
-        # Summary
-        pct = int((total_installed / total_tools) * 100) if total_tools else 0
-        color = "\033[32m" if pct >= 70 else ("\033[33m" if pct >= 40 else "\033[31m")
-        print(f"Total: {color}{total_installed}/{total_tools} ({pct}%)\033[0m tools installed")
-        
-        if total_installed < 10:
-            print("\n\033[33mTip:\033[0m Run 'sudo macaron install' to install missing tools")
-    
-    elif args.what == "results":
-        if not DATA_DIR.exists():
-            print("No results yet")
-            return 0
-        
-        print("Scan Results:")
-        for target_dir in sorted(DATA_DIR.iterdir()):
-            if target_dir.is_dir():
-                summary_file = target_dir / "summary.json"
-                if summary_file.exists():
-                    with open(summary_file) as f:
-                        summary = json.load(f)
-                    stats = summary.get("stats", {})
-                    print(f"\n  {target_dir.name}:")
-                    print(f"    Subdomains: {stats.get('subdomains', 0)}")
-                    print(f"    Live hosts: {stats.get('live_hosts', 0)}")
-                    print(f"    URLs:       {stats.get('urls', 0)}")
-                    print(f"    Vulns:      {stats.get('vulnerabilities', 0)}")
-    
-    elif args.what == "targets":
-        targets_file = CONFIG_DIR / "targets.txt"
-        if targets_file.exists():
-            targets = load_list(targets_file)
-            print(f"Saved Targets ({len(targets)}):")
-            for t in targets:
-                print(f"  - {t}")
-        else:
-            print("No saved targets")
-    
-    return 0
-
-def cmd_export(args):
-    """Export results"""
-    if not DATA_DIR.exists():
-        print("No data to export")
-        return 1
-    
-    output_file = Path(args.output) if args.output else Path(f"macaron_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-    
-    data = {"exported_at": get_timestamp(), "targets": {}}
-    
-    for target_dir in DATA_DIR.iterdir():
-        if target_dir.is_dir():
-            if args.domain and target_dir.name != sanitize_target(args.domain):
-                continue
-            
-            target_data = {"name": target_dir.name}
-            
-            for file in ["subdomains.txt", "live_hosts.txt", "urls.txt", "ports.txt"]:
-                filepath = target_dir / file
-                if filepath.exists():
-                    target_data[file.replace(".txt", "")] = load_list(filepath)
-            
-            summary_file = target_dir / "summary.json"
-            if summary_file.exists():
-                with open(summary_file) as f:
-                    target_data["summary"] = json.load(f)
-            
-            data["targets"][target_dir.name] = target_data
-    
-    with open(output_file, 'w') as f:
-        json.dump(data, f, indent=2)
-    
-    print(f"Exported to {output_file}")
-    return 0
-
-def cmd_add(args):
-    """Add targets to saved list"""
-    targets_file = CONFIG_DIR / "targets.txt"
-    ensure_dir(CONFIG_DIR)
-    
-    existing = set(load_list(targets_file)) if targets_file.exists() else set()
-    
-    new_targets = []
-    for t in args.targets:
-        t = t.strip().lower()
-        if t.startswith("http"):
-            t = t.replace("https://", "").replace("http://", "").split("/")[0]
-        if t and t not in existing:
-            new_targets.append(t)
-            existing.add(t)
-    
-    if new_targets:
-        with open(targets_file, 'a') as f:
-            for t in new_targets:
-                f.write(f"{t}\n")
-        print(f"Added {len(new_targets)} target(s): {', '.join(new_targets)}")
-    else:
-        print("No new targets to add")
-    
-    return 0
-
-
-def cmd_status(args):
-    """Show current scan status"""
-    state_file = STATE_DIR / "scan_state.json"
-    
-    print("\n\033[1m=== MACARON STATUS ===\033[0m\n")
-    
-    # Check if scan is running
-    if state_file.exists():
-        with open(state_file) as f:
-            state = json.load(f)
-        
-        status = state.get("status", "unknown")
-        status_color = {
-            "running": "\033[33m",  # Yellow
-            "completed": "\033[32m",  # Green
-            "failed": "\033[31m",  # Red
-            "paused": "\033[36m"  # Cyan
-        }.get(status, "\033[0m")
-        
-        print(f"  Status:  {status_color}{status.upper()}\033[0m")
-        print(f"  Target:  {state.get('current_target', 'N/A')}")
-        print(f"  Module:  {state.get('current_module', 'N/A')}")
-        print(f"  Started: {state.get('start_time', 'N/A')}")
-        
-        if state.get("targets"):
-            progress = f"{state.get('target_index', 0) + 1}/{len(state['targets'])}"
-            print(f"  Progress: {progress} targets")
-    else:
-        print("  Status:  \033[32mIDLE\033[0m (no active scan)")
-    
-    # Show stats summary
-    print("\n\033[1m=== DATA SUMMARY ===\033[0m\n")
-    
-    if DATA_DIR.exists():
-        total_subs = 0
-        total_live = 0
-        total_urls = 0
-        total_vulns = 0
-        
-        for target_dir in DATA_DIR.iterdir():
-            if target_dir.is_dir():
-                sub_file = target_dir / "subdomains.txt"
-                live_file = target_dir / "live_hosts.txt"
-                url_file = target_dir / "urls.txt"
-                vuln_file = target_dir / "vulnerabilities.json"
-                
-                if sub_file.exists():
-                    total_subs += len(load_list(sub_file))
-                if live_file.exists():
-                    total_live += len(load_list(live_file))
-                if url_file.exists():
-                    total_urls += len(load_list(url_file))
-                if vuln_file.exists():
-                    with open(vuln_file) as f:
-                        vulns = json.load(f)
-                        total_vulns += len(vulns) if isinstance(vulns, list) else 0
-        
-        domains = len([d for d in DATA_DIR.iterdir() if d.is_dir()])
-        print(f"  Domains:     {domains}")
-        print(f"  Subdomains:  \033[34m{total_subs}\033[0m")
-        print(f"  Live Hosts:  \033[32m{total_live}\033[0m")
-        print(f"  URLs:        \033[33m{total_urls}\033[0m")
-        print(f"  Vulns:       \033[31m{total_vulns}\033[0m")
-    else:
-        print("  No data collected yet")
-    
-    print()
-    return 0
-
-
-def cmd_show(args):
-    """Show detailed results for a domain or all"""
-    if not DATA_DIR.exists():
-        print("No results yet. Run a scan first.")
-        return 1
-    
-    domain = args.domain
-    what = args.what or "all"
-    limit = args.limit or 50
-    
-    # Find matching directories
-    targets = []
-    for d in DATA_DIR.iterdir():
-        if d.is_dir():
-            if not domain or domain.lower() in d.name.lower():
-                targets.append(d)
-    
-    if not targets:
-        print(f"No results found" + (f" for '{domain}'" if domain else ""))
-        return 1
-    
-    for target_dir in sorted(targets):
-        print(f"\n\033[1;32m{'='*60}\033[0m")
-        print(f"\033[1;32m {target_dir.name}\033[0m")
-        print(f"\033[1;32m{'='*60}\033[0m")
-        
-        if what in ["all", "subdomains", "subs"]:
-            sub_file = target_dir / "subdomains.txt"
-            if sub_file.exists():
-                subs = load_list(sub_file)
-                print(f"\n\033[1;34m[SUBDOMAINS] ({len(subs)} total)\033[0m")
-                for s in subs[:limit]:
-                    print(f"  {s}")
-                if len(subs) > limit:
-                    print(f"  ... and {len(subs) - limit} more")
-        
-        if what in ["all", "live", "hosts"]:
-            live_file = target_dir / "live_hosts.txt"
-            if live_file.exists():
-                hosts = load_list(live_file)
-                print(f"\n\033[1;32m[LIVE HOSTS] ({len(hosts)} total)\033[0m")
-                for h in hosts[:limit]:
-                    print(f"  {h}")
-                if len(hosts) > limit:
-                    print(f"  ... and {len(hosts) - limit} more")
-        
-        if what in ["all", "ports"]:
-            ports_file = target_dir / "ports.txt"
-            if ports_file.exists():
-                ports = load_list(ports_file)
-                print(f"\n\033[1;33m[OPEN PORTS] ({len(ports)} total)\033[0m")
-                for p in ports[:limit]:
-                    print(f"  {p}")
-                if len(ports) > limit:
-                    print(f"  ... and {len(ports) - limit} more")
-        
-        if what in ["all", "urls"]:
-            url_file = target_dir / "urls.txt"
-            if url_file.exists():
-                urls = load_list(url_file)
-                print(f"\n\033[1;36m[URLS] ({len(urls)} total)\033[0m")
-                for u in urls[:limit]:
-                    print(f"  {u}")
-                if len(urls) > limit:
-                    print(f"  ... and {len(urls) - limit} more")
-        
-        if what in ["all", "js"]:
-            js_file = target_dir / "js_files.txt"
-            if js_file.exists():
-                js = load_list(js_file)
-                print(f"\n\033[1;35m[JS FILES] ({len(js)} total)\033[0m")
-                for j in js[:limit]:
-                    print(f"  {j}")
-                if len(js) > limit:
-                    print(f"  ... and {len(js) - limit} more")
-        
-        if what in ["all", "vulns", "vulnerabilities"]:
-            vuln_file = target_dir / "vulnerabilities.json"
-            nuclei_file = target_dir / "nuclei.json"
-            
-            vulns = []
-            for vf in [vuln_file, nuclei_file]:
-                if vf.exists():
-                    with open(vf) as f:
-                        content = f.read().strip()
-                        if content:
-                            # Handle JSONL format
-                            for line in content.split('\n'):
-                                if line.strip():
-                                    try:
-                                        vulns.append(json.loads(line))
-                                    except:
-                                        pass
-            
-            if vulns:
-                # Sort by severity
-                severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-                vulns.sort(key=lambda v: severity_order.get(
-                    v.get("info", {}).get("severity", "info").lower(), 5))
-                
-                print(f"\n\033[1;31m[VULNERABILITIES] ({len(vulns)} total)\033[0m")
-                
-                sev_colors = {
-                    "critical": "\033[1;31m",
-                    "high": "\033[31m",
-                    "medium": "\033[33m",
-                    "low": "\033[32m",
-                    "info": "\033[36m"
-                }
-                
-                for v in vulns[:limit]:
-                    name = v.get("info", {}).get("name", v.get("template-id", "Unknown"))
-                    sev = v.get("info", {}).get("severity", "info").lower()
-                    host = v.get("host", v.get("matched-at", ""))
-                    color = sev_colors.get(sev, "\033[0m")
-                    print(f"  {color}[{sev.upper():8}]\033[0m {name}")
-                    if host:
-                        print(f"             └─ {host}")
-                
-                if len(vulns) > limit:
-                    print(f"  ... and {len(vulns) - limit} more")
-        
-        if what in ["all", "tech"]:
-            tech_file = target_dir / "technologies.json"
-            if tech_file.exists():
-                with open(tech_file) as f:
-                    tech = json.load(f)
-                print(f"\n\033[1;35m[TECHNOLOGIES]\033[0m")
-                for host, techs in list(tech.items())[:limit]:
-                    print(f"  {host}: {', '.join(techs)}")
-    
-    print()
-    return 0
-
-
-def cmd_watch(args):
-    """Live monitoring of scan progress"""
-    import select
-    
-    print("\033[2J\033[H")  # Clear screen
-    print("\033[1mMACARRON LIVE MONITOR\033[0m (Press Ctrl+C to exit)\n")
-    
-    state_file = STATE_DIR / "scan_state.json"
-    log_file = LOGS_DIR / "scan.log"
-    
-    last_log_pos = 0
-    if log_file.exists():
-        last_log_pos = log_file.stat().st_size
-    
-    try:
-        while True:
-            # Print status header
-            print("\033[3;0H")  # Move cursor to line 3
-            
-            if state_file.exists():
-                with open(state_file) as f:
-                    state = json.load(f)
-                
-                status = state.get("status", "unknown")
-                status_color = {
-                    "running": "\033[33m",
-                    "completed": "\033[32m",
-                    "failed": "\033[31m",
-                    "paused": "\033[36m"
-                }.get(status, "\033[0m")
-                
-                target = state.get("current_target", "N/A")
-                module = state.get("current_module", "N/A")
-                started = state.get("start_time", "N/A")
-                
-                # Progress bar
-                targets_list = state.get("targets", [])
-                idx = state.get("target_index", 0)
-                progress = 0
-                if targets_list:
-                    progress = int((idx / len(targets_list)) * 40)
-                
-                bar = f"[{'█' * progress}{'░' * (40 - progress)}]"
-                
-                print(f"  Status:   {status_color}{status.upper():12}\033[0m  Target: {target}")
-                print(f"  Module:   {module:20}  Started: {started}")
-                print(f"  Progress: {bar} {idx}/{len(targets_list)}")
-                print()
-                print("\033[1mRecent Activity:\033[0m")
-                print("-" * 60)
-            else:
-                print("  No active scan. Waiting...")
-                print()
-                print("\033[1mRecent Activity:\033[0m")
-                print("-" * 60)
-            
-            # Show recent log entries
-            if log_file.exists():
-                current_size = log_file.stat().st_size
-                if current_size > last_log_pos:
-                    with open(log_file) as f:
-                        f.seek(last_log_pos)
-                        new_lines = f.read()
-                        for line in new_lines.strip().split('\n')[-20:]:
-                            if line.strip():
-                                # Color code log levels
-                                if "ERROR" in line:
-                                    print(f"\033[31m{line[:100]}\033[0m")
-                                elif "WARNING" in line:
-                                    print(f"\033[33m{line[:100]}\033[0m")
-                                elif "INFO" in line:
-                                    print(f"\033[32m{line[:100]}\033[0m")
-                                else:
-                                    print(line[:100])
-                        last_log_pos = current_size
-            
-            time.sleep(args.interval if hasattr(args, 'interval') else 2)
-            
-    except KeyboardInterrupt:
-        print("\n\033[0mMonitor stopped.")
-        return 0
-    
-    return 0
-
-
-def cmd_verify(args):
-    """Verify tool installations and provide fixes"""
-    print("\n\033[1m=== MACARON TOOL VERIFICATION ===\033[0m\n")
-    
-    # Core tools required for basic functionality
-    core_tools = {
-        "subfinder": "go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
-        "httpx": "go install github.com/projectdiscovery/httpx/cmd/httpx@latest",
-        "nuclei": "go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
-    }
-    
-    # Recommended tools
-    recommended_tools = {
-        "dnsx": "go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest",
-        "naabu": "go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
-        "katana": "go install github.com/projectdiscovery/katana/cmd/katana@latest",
-        "gau": "go install github.com/lc/gau/v2/cmd/gau@latest",
-        "waybackurls": "go install github.com/tomnomnom/waybackurls@latest",
-        "ffuf": "go install github.com/ffuf/ffuf/v2@latest",
-        "gowitness": "go install github.com/sensepost/gowitness@latest",
-    }
-    
-    # Optional tools
-    optional_tools = {
-        "amass": "apt install amass OR go install github.com/owasp-amass/amass/v4/...@master",
-        "assetfinder": "go install github.com/tomnomnom/assetfinder@latest",
-        "findomain": "curl -LO https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux.zip",
-        "chaos": "go install github.com/projectdiscovery/chaos-client/cmd/chaos@latest",
-        "hakrawler": "go install github.com/hakluke/hakrawler@latest",
-        "waymore": "pip3 install waymore",
-        "xnLinkFinder": "pip3 install xnLinkFinder",
-        "getJS": "go install github.com/003random/getJS@latest",
-    }
-    
-    issues = []
-    
-    # Check Go installation
-    print("\033[1;34m[1] Checking Go installation...\033[0m")
-    if is_installed("go"):
-        code, out, _ = run_cmd(["go", "version"], 10)
-        if code == 0:
-            print(f"  \033[32m✓\033[0m Go: {out.strip()}")
-        else:
-            print(f"  \033[33m!\033[0m Go installed but version check failed")
-    else:
-        print("  \033[31m✗\033[0m Go not installed")
-        issues.append("Go is required. Install with: sudo apt install golang-go")
-    
-    # Check GOPATH
-    gopath = os.environ.get("GOPATH", str(Path.home() / "go"))
-    gobin = Path(gopath) / "bin"
-    if gobin.exists() and str(gobin) in os.environ.get("PATH", ""):
-        print(f"  \033[32m✓\033[0m GOPATH/bin in PATH")
-    else:
-        print(f"  \033[33m!\033[0m GOPATH/bin not in PATH")
-        issues.append(f"Add to ~/.bashrc: export PATH=$PATH:{gobin}")
-    
-    # Check core tools
-    print("\n\033[1;34m[2] Core Tools (required):\033[0m")
-    for tool, install_cmd in core_tools.items():
-        if is_installed(tool):
-            print(f"  \033[32m✓\033[0m {tool}")
-        else:
-            print(f"  \033[31m✗\033[0m {tool}")
-            issues.append(f"Install {tool}: {install_cmd}")
-    
-    # Check recommended tools
-    print("\n\033[1;34m[3] Recommended Tools:\033[0m")
-    for tool, install_cmd in recommended_tools.items():
-        if is_installed(tool):
-            print(f"  \033[32m✓\033[0m {tool}")
-        else:
-            print(f"  \033[33m○\033[0m {tool} (optional)")
-    
-    # Check optional tools
-    print("\n\033[1;34m[4] Optional Tools:\033[0m")
-    for tool, install_cmd in optional_tools.items():
-        if is_installed(tool):
-            print(f"  \033[32m✓\033[0m {tool}")
-        else:
-            print(f"  \033[90m○\033[0m {tool}")
-    
-    # Check proxychains
-    print("\n\033[1;34m[5] Proxy Support:\033[0m")
-    if is_installed("proxychains4"):
-        print(f"  \033[32m✓\033[0m proxychains4 installed")
-        # Check config
-        pc_config = Path("/etc/proxychains4.conf")
-        if pc_config.exists():
-            print(f"  \033[32m✓\033[0m Config: {pc_config}")
-        else:
-            print(f"  \033[33m!\033[0m Config not found at {pc_config}")
-    else:
-        print("  \033[31m✗\033[0m proxychains4 not installed")
-        issues.append("Install proxychains: sudo apt install proxychains4")
-    
-    # Check nuclei templates
-    print("\n\033[1;34m[6] Nuclei Templates:\033[0m")
-    nuclei_templates = Path.home() / "nuclei-templates"
-    if nuclei_templates.exists():
-        template_count = sum(1 for _ in nuclei_templates.rglob("*.yaml"))
-        print(f"  \033[32m✓\033[0m {template_count} templates in {nuclei_templates}")
-    else:
-        print(f"  \033[31m✗\033[0m Templates not found")
-        issues.append("Update nuclei templates: nuclei -update-templates")
-    
-    # Summary
-    print("\n" + "="*50)
-    if issues:
-        print(f"\033[33m{len(issues)} issue(s) found:\033[0m\n")
-        for i, issue in enumerate(issues, 1):
-            print(f"  {i}. {issue}")
-        print("\n\033[1mQuick fix:\033[0m sudo macaron install")
-    else:
-        print("\033[32m✓ All checks passed! Ready to scan.\033[0m")
-    
-    return 0 if not issues else 1
-
 
 # ============== MAIN ==============
 
 def main():
     parser = argparse.ArgumentParser(
         prog="macaron",
-        description="Macaron - Security Reconnaissance Platform",
+        description="Macaron v2 - Security Reconnaissance Platform",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  macaron scan -t example.com              # Wide infrastructure scan
-  macaron scan -t app.example.com -m narrow   # Narrow application scan
-  macaron scan -f targets.txt              # Scan from file
-  macaron scan -t target.com --no-proxy    # Without proxychains
-  macaron scan -t target.com --slow        # Slow mode (10 req/s)
-  macaron status                           # Show scan status & summary
-  macaron show -d example.com              # View all results for domain
-  macaron show -w vulns                    # Show only vulnerabilities
-  macaron watch                            # Live monitor scan progress
-  macaron list tools                       # Show installed tools
-  macaron verify                           # Verify installations & diagnose
-  macaron config webhook --url URL         # Set Discord webhook
-  macaron export -o results.json           # Export all data
+  macaron -s example.com              Wide scan
+  macaron -s app.com -n               Narrow scan  
+  macaron -s target.com -f            Fast scan
+  macaron -s target.com --slow        Slow mode (ISP friendly)
+  macaron -S                          Show status
+  macaron -L                          List tools
+  macaron -R -d example.com           Show results
         """
     )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    
+    # Main actions (short flags)
+    parser.add_argument("-s", "--scan", dest="target", nargs="*", metavar="TARGET", help="Scan target(s)")
+    parser.add_argument("-S", "--status", action="store_true", help="Show status & summary")
+    parser.add_argument("-R", "--results", action="store_true", help="Show results")
+    parser.add_argument("-L", "--list-tools", action="store_true", help="List installed tools")
+    parser.add_argument("-E", "--export", action="store_true", help="Export results")
+    parser.add_argument("-I", "--install", action="store_true", help="Install recon tools (sudo)")
+    parser.add_argument("-C", "--config", action="store_true", help="Show config")
+    
+    # Scan options
+    parser.add_argument("-f", "--fast", action="store_true", help="Fast mode (minimal tools)")
+    parser.add_argument("-n", "--narrow", action="store_true", help="Narrow mode (app-focused)")
+    parser.add_argument("-F", "--file", metavar="FILE", help="Targets from file")
+    parser.add_argument("--stdin", action="store_true", help="Read from stdin")
+    parser.add_argument("--no-proxy", action="store_true", help="Disable proxychains")
+    parser.add_argument("--slow", action="store_true", help="Slow mode (10 req/s)")
+    parser.add_argument("--rate", type=int, help="Rate limit (req/s)")
+    parser.add_argument("--threads", type=int, help="Threads")
     parser.add_argument("-q", "--quiet", action="store_true", help="Quiet mode")
+    
+    # Results options
+    parser.add_argument("-d", "--domain", help="Filter by domain")
+    parser.add_argument("-w", "--what", choices=["all", "subdomains", "live", "ports", "urls", "js", "vulns"], help="What to show")
+    parser.add_argument("--limit", type=int, default=50, help="Limit results")
+    
+    # Config options
+    parser.add_argument("--webhook", metavar="URL", help="Set Discord webhook")
+    parser.add_argument("--test", action="store_true", help="Test webhook")
+    parser.add_argument("--show", action="store_true", help="Show config")
+    
+    # Export options
+    parser.add_argument("-o", "--output", help="Output file")
+    
+    # Meta
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose")
     parser.add_argument("--version", action="version", version=f"macaron {VERSION}")
-    
-    subparsers = parser.add_subparsers(dest="command", help="Commands")
-    
-    # Scan
-    scan_p = subparsers.add_parser("scan", help="Run reconnaissance scan")
-    scan_p.add_argument("-t", "--target", nargs="+", help="Target domain(s)")
-    scan_p.add_argument("-f", "--file", help="File with targets")
-    scan_p.add_argument("--stdin", action="store_true", help="Read from stdin")
-    scan_p.add_argument("-m", "--mode", choices=["wide", "narrow"], default="wide",
-                        help="Scan mode: wide (infrastructure) or narrow (application)")
-    scan_p.add_argument("--no-proxy", action="store_true", help="Disable proxychains")
-    scan_p.add_argument("--threads", type=int, default=50, help="Number of threads")
-    scan_p.add_argument("-r", "--resume", action="store_true", help="Resume previous scan")
-    scan_p.add_argument("--slow", action="store_true", help="Slow mode for limited bandwidth (rate limit to 10 req/s)")
-    scan_p.add_argument("--rate-limit", type=int, default=100, help="Requests per second (default: 100)")
-    
-    # Install
-    subparsers.add_parser("install", help="Install recon tools (requires sudo)")
-    
-    # Config
-    config_p = subparsers.add_parser("config", help="Configuration")
-    config_p.add_argument("action", choices=["show", "set", "webhook"], nargs="?", default="show")
-    config_p.add_argument("--key", help="Config key")
-    config_p.add_argument("--value", help="Config value")
-    config_p.add_argument("--url", help="Webhook URL")
-    config_p.add_argument("--test", action="store_true", help="Test webhook")
-    
-    # List
-    list_p = subparsers.add_parser("list", help="List tools, results, or targets")
-    list_p.add_argument("what", choices=["tools", "results", "targets"], default="tools", nargs="?")
-    
-    # Export
-    export_p = subparsers.add_parser("export", help="Export results")
-    export_p.add_argument("-o", "--output", help="Output file")
-    export_p.add_argument("-d", "--domain", help="Specific domain")
-    
-    # Add
-    add_p = subparsers.add_parser("add", help="Add targets to saved list")
-    add_p.add_argument("targets", nargs="+", help="Targets to add")
-    
-    # Status - NEW
-    subparsers.add_parser("status", help="Show current scan status and summary")
-    
-    # Show - NEW
-    show_p = subparsers.add_parser("show", help="Show detailed results")
-    show_p.add_argument("-d", "--domain", help="Filter by domain")
-    show_p.add_argument("-w", "--what", choices=["all", "subdomains", "subs", "live", "hosts", "ports", "urls", "js", "vulns", "tech"],
-                        default="all", help="What to show")
-    show_p.add_argument("-n", "--limit", type=int, default=50, help="Limit results per category")
-    
-    # Watch - NEW
-    watch_p = subparsers.add_parser("watch", help="Live monitor scan progress")
-    watch_p.add_argument("-i", "--interval", type=int, default=2, help="Refresh interval in seconds")
-    
-    # Verify - NEW
-    subparsers.add_parser("verify", help="Verify tool installations and diagnose issues")
     
     args = parser.parse_args()
     
-    # Setup logging
-    setup_logging(args.verbose, args.quiet)
-    
-    # Show banner
-    if not args.quiet and args.command:
-        print(BANNER.format(version=VERSION))
-    
-    # Run command
-    if not args.command:
+    # Route to appropriate command
+    if args.target is not None:
+        return cmd_scan(args)
+    elif args.status:
+        return cmd_status(args)
+    elif args.results:
+        return cmd_show(args)
+    elif args.list_tools:
+        return cmd_tools(args)
+    elif args.export:
+        return cmd_export(args)
+    elif args.install:
+        return cmd_install(args)
+    elif args.config or args.webhook:
+        return cmd_config(args)
+    else:
+        # Show help with banner
+        if console:
+            console.print(Panel(BANNER.format(version=VERSION), border_style="cyan", box=box.DOUBLE))
         parser.print_help()
         return 0
-    
-    commands = {
-        "scan": cmd_scan,
-        "install": cmd_install,
-        "config": cmd_config,
-        "list": cmd_list,
-        "export": cmd_export,
-        "add": cmd_add,
-        "status": cmd_status,
-        "show": cmd_show,
-        "watch": cmd_watch,
-        "verify": cmd_verify,
-    }
-    
-    return commands.get(args.command, lambda _: parser.print_help())(args)
-
 
 if __name__ == "__main__":
     sys.exit(main())
