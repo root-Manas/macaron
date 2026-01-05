@@ -9,8 +9,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 
-# Add project to path
-sys.path.insert(0, str(Path(__file__).parent))
+
 
 def setup_logging(verbose: bool = False):
     import logging

@@ -6,9 +6,6 @@ from sqlalchemy import pool
 from alembic import context
 
 # Import your models
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backend.database import Base
 from backend.config import settings
