@@ -49,7 +49,7 @@ except ImportError:
 
 # ============== CONSTANTS ==============
 
-VERSION = "2.1.1"
+VERSION = "2.2.0"
 BANNER = """[bold cyan]
 ███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗
 ████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔═══██╗████╗  ██║
@@ -1317,6 +1317,17 @@ def cmd_show(args):
         console.print(f"\n[bold cyan]{'═'*50}[/]")
         console.print(f"[bold cyan] {target_dir.name}[/]")
         console.print(f"[bold cyan]{'═'*50}[/]")
+        
+        # Show diff report if requested
+        if what == "diff":
+            diff_file = target_dir / "diff_report.txt"
+            if diff_file.exists():
+                console.print(f"\n[bold green]🆕 DIFF REPORT[/]")
+                with open(diff_file) as f:
+                    console.print(f.read())
+            else:
+                console.print(f"\n[dim]No diff report found. Run a scan twice to generate.[/]")
+            continue
         
         files = {
             "subdomains": ("subdomains.txt", "🔍"),

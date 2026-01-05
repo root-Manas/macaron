@@ -1,4 +1,4 @@
-# Macaron v2.1 - Security Reconnaissance Platform
+# Macaron v2.2 - Security Reconnaissance Platform
 
 ```
 ███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗
@@ -29,6 +29,8 @@ Macaron is a comprehensive security reconnaissance platform designed for bug bou
 - 🔔 Discord notifications for real-time updates
 - ⚙️ YAML-configurable pipeline (customize everything!)
 - 📦 Beautiful CLI with progress bars
+- 🆕 **NEW: Diff tracking** - See what's new since last scan
+- ⏸️ **NEW: Resume support** - Continue interrupted scans
 
 ## 🚀 Quick Start
 
@@ -74,8 +76,10 @@ macaron -L
 | `macaron -s target.com` | Wide scan (infrastructure recon) |
 | `macaron -s target.com -f` | Fast scan (quick subdomain + probe) |
 | `macaron -s target.com -n` | Narrow scan (app-focused, URL crawling) |
+| `macaron -s target.com --resume` | Resume interrupted scan |
 | `macaron -S` | Show status of all scanned domains |
 | `macaron -R -d target` | Show results for a domain |
+| `macaron -R -d target -w diff` | Show diff report (new assets) |
 | `macaron -L` | List installed tools |
 | `macaron -P` | Show pipeline config path |
 | `macaron -E -o file.json` | Export results to JSON |
@@ -103,6 +107,9 @@ cat targets.txt | macaron --stdin
 
 # Disable proxychains wrapper
 macaron -s target.com --no-proxy
+
+# Resume an interrupted scan
+macaron -s target.com --resume
 ```
 
 ### Viewing Results
@@ -195,6 +202,54 @@ macaron -s https://app.example.com -n
 | JS Extraction | custom | `js.txt` |
 | Vulnerability Scan | nuclei (web templates) | `vulns.json` |
 
+## 🆕 Diff Tracking (NEW in v2.2)
+
+Macaron tracks what's new since your last scan. After each scan:
+
+```bash
+# View diff report showing new assets
+macaron -R -d example.com -w diff
+
+# Output shows:
+# [+] NEW SUBDOMAINS (5)
+#     api2.example.com
+#     staging.example.com
+#     ...
+# [+] NEW LIVE HOSTS (2)
+#     https://api2.example.com
+#     ...
+```
+
+The scan summary table also shows new counts:
+
+```
+╭─────────────────┬─────────┬─────╮
+│ Metric          │   Total │ New │
+├─────────────────┼─────────┼─────┤
+│ Subdomains      │     150 │ +12 │
+│ Live Hosts      │      45 │  +3 │
+│ Vulnerabilities │       2 │  +1 │
+╰─────────────────┴─────────┴─────╯
+```
+
+Files created:
+- `.scan_history.json` - Previous scan data for comparison
+- `diff_report.txt` - Human-readable diff report
+
+## ⏸️ Resume Support (NEW in v2.2)
+
+If a scan is interrupted (Ctrl+C, network issue, etc.), you can resume it:
+
+```bash
+# Interrupt a scan with Ctrl+C
+# You'll see: "💾 State saved. Resume with --resume flag"
+
+# Resume from where you left off
+macaron -s target.com --resume
+```
+
+State is saved after each stage, so you won't lose progress on long scans.
+
 ## 📁 Data Storage
 
 All scan data is stored in `~/.macaron/data/<domain>/`:
@@ -210,9 +265,11 @@ All scan data is stored in `~/.macaron/data/<domain>/`:
 │       ├── ports.txt       # Open ports
 │       ├── urls.txt        # Discovered URLs
 │       ├── js.txt          # JavaScript files
-│       └── vulns.json      # Nuclei findings
+│       ├── vulns.json      # Nuclei findings
+│       ├── diff_report.txt # New assets since last scan
+│       └── .scan_history.json  # Previous scan data
 └── state/
-    └── scan_state.json    # Resume data
+    └── <target>.state.json  # Resume data for interrupted scans
 ```
 
 ## ⚙️ Pipeline Configuration
@@ -380,5 +437,7 @@ This tool is for authorized security testing only. Always obtain proper authoriz
 
 ---
 
-**Version**: 2.1.1  
+**Version**: 2.2.0  
+**Status**: Production Ready  
+**Last Updated**: 2026-01-05
 
