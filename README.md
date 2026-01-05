@@ -372,14 +372,6 @@ MIT License - see LICENSE file for details
 
 This tool is for authorized security testing only. Always obtain proper authorization before scanning targets. The authors are not responsible for misuse.
 
-## 🙏 Credits
-
-**Author**: [@root-Manas](https://github.com/root-Manas)
-
-Built with:
-- [ProjectDiscovery](https://projectdiscovery.io/) tools
-- [Rich](https://rich.readthedocs.io/) for beautiful CLI
-- [PyYAML](https://pyyaml.org/) for configuration
 
 ## 📞 Support
 
@@ -389,5 +381,4 @@ Built with:
 ---
 
 **Version**: 2.1.1  
-**Status**: Production Ready  
-**Last Updated**: 2026-01-05
+

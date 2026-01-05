@@ -292,6 +292,186 @@ def save_config(config: Dict):
 def get_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
+# ============== DIFF TRACKER ==============
+
+class DiffTracker:
+    """Track new assets discovered since last scan"""
+    
+    def __init__(self, target_dir: Path):
+        self.target_dir = target_dir
+        self.history_file = target_dir / ".scan_history.json"
+        self.previous = self._load_previous()
+        self.current = {
+            "subdomains": set(),
+            "live_hosts": set(),
+            "urls": set(),
+            "ports": set(),
+            "vulnerabilities": []
+        }
+        self.new_assets = {
+            "subdomains": set(),
+            "live_hosts": set(),
+            "urls": set(),
+            "ports": set(),
+            "vulnerabilities": []
+        }
+    
+    def _load_previous(self) -> Dict:
+        """Load previous scan data"""
+        if self.history_file.exists():
+            try:
+                with open(self.history_file) as f:
+                    data = json.load(f)
+                    return {
+                        "subdomains": set(data.get("subdomains", [])),
+                        "live_hosts": set(data.get("live_hosts", [])),
+                        "urls": set(data.get("urls", [])),
+                        "ports": set(data.get("ports", [])),
+                        "vulnerabilities": data.get("vulnerabilities", []),
+                        "last_scan": data.get("last_scan", "")
+                    }
+            except:
+                pass
+        return {"subdomains": set(), "live_hosts": set(), "urls": set(), "ports": set(), "vulnerabilities": [], "last_scan": ""}
+    
+    def update(self, asset_type: str, items):
+        """Track current scan assets"""
+        if asset_type == "vulnerabilities":
+            if isinstance(items, list):
+                self.current["vulnerabilities"].extend(items)
+        elif isinstance(items, (set, list)):
+            self.current[asset_type].update(items)
+    
+    def compute_diff(self) -> Dict:
+        """Compute new assets since last scan"""
+        for key in ["subdomains", "live_hosts", "urls", "ports"]:
+            self.new_assets[key] = self.current[key] - self.previous.get(key, set())
+        
+        # For vulnerabilities, compare by template-id + host
+        prev_vuln_keys = {(v.get("template", ""), v.get("host", "")) for v in self.previous.get("vulnerabilities", [])}
+        self.new_assets["vulnerabilities"] = [
+            v for v in self.current["vulnerabilities"]
+            if (v.get("template", ""), v.get("host", "")) not in prev_vuln_keys
+        ]
+        
+        return {
+            "new_subdomains": len(self.new_assets["subdomains"]),
+            "new_live_hosts": len(self.new_assets["live_hosts"]),
+            "new_urls": len(self.new_assets["urls"]),
+            "new_ports": len(self.new_assets["ports"]),
+            "new_vulnerabilities": len(self.new_assets["vulnerabilities"]),
+            "last_scan": self.previous.get("last_scan", "Never")
+        }
+    
+    def save(self):
+        """Save current scan as history for next diff"""
+        data = {
+            "subdomains": list(self.current["subdomains"]),
+            "live_hosts": list(self.current["live_hosts"]),
+            "urls": list(self.current["urls"]),
+            "ports": list(self.current["ports"]),
+            "vulnerabilities": self.current["vulnerabilities"],
+            "last_scan": get_timestamp()
+        }
+        with open(self.history_file, 'w') as f:
+            json.dump(data, f)
+    
+    def save_diff_report(self):
+        """Save diff report to file"""
+        diff = self.compute_diff()
+        report_file = self.target_dir / "diff_report.txt"
+        with open(report_file, 'w') as f:
+            f.write(f"=== DIFF REPORT ===\n")
+            f.write(f"Previous scan: {diff['last_scan']}\n")
+            f.write(f"Current scan:  {get_timestamp()}\n\n")
+            
+            if self.new_assets["subdomains"]:
+                f.write(f"[+] NEW SUBDOMAINS ({len(self.new_assets['subdomains'])})\n")
+                for s in sorted(self.new_assets["subdomains"]):
+                    f.write(f"    {s}\n")
+            
+            if self.new_assets["live_hosts"]:
+                f.write(f"\n[+] NEW LIVE HOSTS ({len(self.new_assets['live_hosts'])})\n")
+                for h in sorted(self.new_assets["live_hosts"]):
+                    f.write(f"    {h}\n")
+            
+            if self.new_assets["ports"]:
+                f.write(f"\n[+] NEW PORTS ({len(self.new_assets['ports'])})\n")
+                for p in sorted(self.new_assets["ports"]):
+                    f.write(f"    {p}\n")
+            
+            if self.new_assets["vulnerabilities"]:
+                f.write(f"\n[!] NEW VULNERABILITIES ({len(self.new_assets['vulnerabilities'])})\n")
+                for v in self.new_assets["vulnerabilities"]:
+                    f.write(f"    [{v.get('severity', 'info').upper()}] {v.get('name', '')} @ {v.get('host', '')}\n")
+
+# ============== STATE MANAGER (Resume Support) ==============
+
+class StateManager:
+    """Manage scan state for pause/resume capability"""
+    
+    def __init__(self, target: str):
+        self.target = sanitize(target)
+        self.state_file = STATE_DIR / f"{self.target}.state.json"
+        ensure_dir(STATE_DIR)
+    
+    def save_state(self, ctx: Dict, current_stage: int, mode: str):
+        """Save current scan state"""
+        state = {
+            "target": ctx["target"],
+            "mode": mode,
+            "current_stage": current_stage,
+            "saved_at": get_timestamp(),
+            "subdomains": list(ctx.get("subdomains", set())),
+            "resolved": ctx.get("resolved", {}),
+            "ports": ctx.get("ports", {}),
+            "live_hosts": list(ctx.get("live_hosts", set())),
+            "urls": list(ctx.get("urls", set())),
+            "js_files": list(ctx.get("js_files", set())),
+            "vulnerabilities": ctx.get("vulnerabilities", []),
+            "technologies": ctx.get("technologies", {}),
+            "errors": ctx.get("errors", [])
+        }
+        with open(self.state_file, 'w') as f:
+            json.dump(state, f, indent=2)
+    
+    def load_state(self) -> Optional[Dict]:
+        """Load saved state if exists"""
+        if not self.state_file.exists():
+            return None
+        try:
+            with open(self.state_file) as f:
+                state = json.load(f)
+            # Convert lists back to sets
+            state["subdomains"] = set(state.get("subdomains", []))
+            state["live_hosts"] = set(state.get("live_hosts", []))
+            state["urls"] = set(state.get("urls", []))
+            state["js_files"] = set(state.get("js_files", []))
+            return state
+        except:
+            return None
+    
+    def has_state(self) -> bool:
+        return self.state_file.exists()
+    
+    def clear_state(self):
+        """Remove state file after successful completion"""
+        if self.state_file.exists():
+            self.state_file.unlink()
+    
+    def get_resume_info(self) -> Optional[Dict]:
+        """Get info about saved state for user prompt"""
+        state = self.load_state()
+        if state:
+            return {
+                "mode": state.get("mode", "unknown"),
+                "stage": state.get("current_stage", 0),
+                "saved_at": state.get("saved_at", "unknown"),
+                "subdomains": len(state.get("subdomains", [])),
+                "live_hosts": len(state.get("live_hosts", []))
+            }
+        return None
+
 # ============== SCAN CONTEXT ==============
 
 @dataclass
@@ -484,7 +664,7 @@ class MacaronEngine:
         if console:
             console.print("\n[yellow]⚠ Interrupt received, stopping gracefully...[/]")
     
-    def scan(self, targets: List[str], mode: str = "wide") -> Dict:
+    def scan(self, targets: List[str], mode: str = "wide", resume: bool = False) -> Dict:
         """Execute scan using YAML pipeline definition"""
         start = datetime.now()
         self.notifier.scan_start(targets, mode)
@@ -497,7 +677,10 @@ class MacaronEngine:
             "ports": 0,
             "urls": 0,
             "vulnerabilities": 0,
-            "errors": 0
+            "errors": 0,
+            "new_subdomains": 0,
+            "new_live_hosts": 0,
+            "new_vulnerabilities": 0
         }
         
         if console and not self.quiet:
@@ -511,39 +694,102 @@ class MacaronEngine:
             return stats
         
         pipeline = pipelines[mode]
+        stages = pipeline.get("stages", [])
         
         for i, target in enumerate(targets):
             if not self.running:
                 break
             
-            # Context holds all discovered data
-            # Always include target itself in subdomains
-            ctx = {
-                "target": target,
-                "subdomains": {target},  # Include target domain by default
-                "resolved": {},
-                "ports": {},
-                "live_hosts": set(),
-                "urls": set(),
-                "js_files": set(),
-                "vulnerabilities": [],
-                "technologies": {},
-                "errors": [],
-                "output_dir": DATA_DIR / sanitize(target)
-            }
-            ensure_dir(ctx["output_dir"])
+            output_dir = DATA_DIR / sanitize(target)
+            ensure_dir(output_dir)
+            
+            # Initialize state manager for resume capability
+            state_mgr = StateManager(target)
+            diff_tracker = DiffTracker(output_dir)
+            
+            # Check for resumable state
+            start_stage = 0
+            if resume and state_mgr.has_state():
+                saved_state = state_mgr.load_state()
+                if saved_state:
+                    start_stage = saved_state.get("current_stage", 0)
+                    # Restore context from saved state
+                    ctx = {
+                        "target": target,
+                        "subdomains": saved_state.get("subdomains", {target}),
+                        "resolved": saved_state.get("resolved", {}),
+                        "ports": saved_state.get("ports", {}),
+                        "live_hosts": saved_state.get("live_hosts", set()),
+                        "urls": saved_state.get("urls", set()),
+                        "js_files": saved_state.get("js_files", set()),
+                        "vulnerabilities": saved_state.get("vulnerabilities", []),
+                        "technologies": saved_state.get("technologies", {}),
+                        "errors": saved_state.get("errors", []),
+                        "output_dir": output_dir
+                    }
+                    if console and not self.quiet:
+                        console.print(f"\n[yellow]⟳ Resuming from stage {start_stage + 1}...[/]\n")
+                else:
+                    ctx = self._init_context(target, output_dir)
+            else:
+                ctx = self._init_context(target, output_dir)
             
             if console and not self.quiet:
                 console.print(f"\n[bold cyan]━━━ Target {i+1}/{len(targets)}: {target} ━━━[/]\n")
             
             # Run each stage in the pipeline
-            for stage in pipeline.get("stages", []):
+            for stage_idx, stage in enumerate(stages):
                 if not self.running:
+                    # Save state for resume on interrupt
+                    state_mgr.save_state(ctx, stage_idx, mode)
+                    if console and not self.quiet:
+                        console.print(f"\n[yellow]💾 State saved. Resume with --resume flag[/]")
                     break
+                
+                # Skip already completed stages if resuming
+                if stage_idx < start_stage:
+                    continue
+                
                 if not stage.get("enabled", True):
                     continue
                 
                 ctx = self._run_pipeline_stage(stage, ctx)
+                
+                # Update diff tracker after each stage
+                output_to = stage.get("output_to", "")
+                if output_to == "subdomains":
+                    diff_tracker.update("subdomains", ctx.get("subdomains", set()))
+                elif output_to == "live_hosts":
+                    diff_tracker.update("live_hosts", ctx.get("live_hosts", set()))
+                elif output_to == "urls":
+                    diff_tracker.update("urls", ctx.get("urls", set()))
+                elif output_to == "ports":
+                    port_set = {f"{h}:{p}" for h, ports in ctx.get("ports", {}).items() for p in ports}
+                    diff_tracker.update("ports", port_set)
+                elif output_to == "vulnerabilities":
+                    diff_tracker.update("vulnerabilities", ctx.get("vulnerabilities", []))
+                
+                # Save state after each stage for resume capability
+                state_mgr.save_state(ctx, stage_idx + 1, mode)
+            
+            # Compute diff with previous scan
+            diff = diff_tracker.compute_diff()
+            
+            # Notify on new findings
+            if diff["new_subdomains"] > 0 or diff["new_live_hosts"] > 0:
+                self.notifier.new_assets(target, diff)
+            
+            # Notify on new vulnerabilities
+            for vuln in diff_tracker.new_assets.get("vulnerabilities", []):
+                self.notifier.vulnerability(
+                    vuln.get("name", "Unknown"),
+                    vuln.get("severity", "info"),
+                    vuln.get("host", target)
+                )
+            
+            # Save diff report and history
+            diff_tracker.save_diff_report()
+            diff_tracker.save()
             
             # Update stats
             stats["subdomains"] += len(ctx.get("subdomains", []))
@@ -552,8 +798,15 @@ class MacaronEngine:
             stats["urls"] += len(ctx.get("urls", []))
             stats["vulnerabilities"] += len(ctx.get("vulnerabilities", []))
             stats["errors"] += len(ctx.get("errors", []))
+            stats["new_subdomains"] += diff["new_subdomains"]
+            stats["new_live_hosts"] += diff["new_live_hosts"]
+            stats["new_vulnerabilities"] += diff["new_vulnerabilities"]
             
-            self._save_results(ctx)
+            self._save_results(ctx, diff)
+            
+            # Clear state after successful completion
+            if self.running:
+                state_mgr.clear_state()
         
         stats["duration"] = str(datetime.now() - start).split('.')[0]
         stats["status"] = "completed" if self.running else "interrupted"
@@ -562,6 +815,22 @@ class MacaronEngine:
         self._print_summary(stats)
         
         return stats
+    
+    def _init_context(self, target: str, output_dir: Path) -> Dict:
+        """Initialize a fresh scan context"""
+        return {
+            "target": target,
+            "subdomains": {target},  # Include target domain by default
+            "resolved": {},
+            "ports": {},
+            "live_hosts": set(),
+            "urls": set(),
+            "js_files": set(),
+            "vulnerabilities": [],
+            "technologies": {},
+            "errors": [],
+            "output_dir": output_dir
+        }
     
     def _run_pipeline_stage(self, stage: Dict, ctx: Dict) -> Dict:
         """Run a single pipeline stage from YAML config"""
@@ -799,8 +1068,8 @@ class MacaronEngine:
             return len(list(ss_dir.glob("*.png"))) if ss_dir.exists() else 0
         return 0
     
-    def _save_results(self, ctx: Dict):
-        """Save final scan summary"""
+    def _save_results(self, ctx: Dict, diff: Dict = None):
+        """Save final scan summary with diff information"""
         summary = {
             "target": ctx["target"],
             "scanned_at": get_timestamp(),
@@ -816,42 +1085,66 @@ class MacaronEngine:
             "vulnerabilities": ctx.get("vulnerabilities", []),
             "errors": ctx.get("errors", [])
         }
+        if diff:
+            summary["diff"] = {
+                "new_subdomains": diff.get("new_subdomains", 0),
+                "new_live_hosts": diff.get("new_live_hosts", 0),
+                "new_urls": diff.get("new_urls", 0),
+                "new_ports": diff.get("new_ports", 0),
+                "new_vulnerabilities": diff.get("new_vulnerabilities", 0),
+                "previous_scan": diff.get("last_scan", "Never")
+            }
         with open(ctx["output_dir"] / "summary.json", 'w') as f:
             json.dump(summary, f, indent=2)
     
     def _print_summary(self, stats: Dict):
-        """Print scan summary"""
+        """Print scan summary with diff information"""
         if not console or self.quiet:
             return
         
         table = Table(title="Scan Results", box=box.ROUNDED, border_style="cyan")
         table.add_column("Metric", style="cyan")
-        table.add_column("Value", style="bold white", justify="right")
+        table.add_column("Total", style="bold white", justify="right")
+        table.add_column("New", style="green", justify="right")
         
-        table.add_row("Mode", stats["mode"])
-        table.add_row("Duration", stats["duration"])
-        table.add_row("Subdomains", str(stats["subdomains"]))
-        table.add_row("Live Hosts", str(stats["live_hosts"]))
-        table.add_row("Open Ports", str(stats["ports"]))
-        table.add_row("URLs", str(stats["urls"]))
+        table.add_row("Mode", stats["mode"], "")
+        table.add_row("Duration", stats["duration"], "")
+        
+        # Show new counts if available
+        new_subs = stats.get("new_subdomains", 0)
+        new_live = stats.get("new_live_hosts", 0)
+        new_vulns = stats.get("new_vulnerabilities", 0)
+        
+        table.add_row("Subdomains", str(stats["subdomains"]), f"+{new_subs}" if new_subs else "-")
+        table.add_row("Live Hosts", str(stats["live_hosts"]), f"+{new_live}" if new_live else "-")
+        table.add_row("Open Ports", str(stats["ports"]), "")
+        table.add_row("URLs", str(stats["urls"]), "")
         
         vuln_style = "bold red" if stats["vulnerabilities"] > 0 else "green"
-        table.add_row("Vulnerabilities", f"[{vuln_style}]{stats['vulnerabilities']}[/]")
+        new_vuln_str = f"[bold red]+{new_vulns}[/]" if new_vulns else "-"
+        table.add_row("Vulnerabilities", f"[{vuln_style}]{stats['vulnerabilities']}[/]", new_vuln_str)
         
         console.print()
         console.print(table)
+        
+        # Show prominent alert if new findings
+        if new_subs > 0 or new_live > 0 or new_vulns > 0:
+            console.print(f"\n[bold green]🆕 NEW FINDINGS:[/] {new_subs} subdomains, {new_live} live hosts, {new_vulns} vulns")
+            console.print(f"[dim]See diff_report.txt for details[/]")
+        
         console.print(f"\n[dim]Results: {DATA_DIR}[/]")
         console.print(f"[dim]Config:  {PIPELINE_FILE}[/]")
 
 # ============== DISCORD NOTIFIER ==============
 
 class DiscordNotifier:
-    """Discord webhook notifications"""
+    """Discord webhook notifications with diff alerts"""
     
     def __init__(self):
         config = load_config().get("discord", {})
         self.enabled = config.get("enabled", False)
         self.webhook_url = config.get("webhook_url", "")
+        self.notify_on = config.get("notify_on", ["scan_start", "scan_complete", "vulnerability", "new_assets"])
     
     def _send(self, title: str, msg: str, color: int = 0x3498db):
         if not self.enabled or not self.webhook_url:
@@ -873,14 +1166,46 @@ class DiscordNotifier:
             pass
     
     def scan_start(self, targets: List[str], mode: str):
-        self._send("🚀 Scan Started", f"**Mode:** {mode}\n**Targets:** {', '.join(targets[:5])}", 0x3498db)
+        if "scan_start" in self.notify_on:
+            self._send("🚀 Scan Started", f"**Mode:** {mode}\n**Targets:** {', '.join(targets[:5])}", 0x3498db)
     
     def scan_complete(self, stats: Dict):
-        self._send("✅ Scan Complete", f"**Duration:** {stats.get('duration')}\n**Subdomains:** {stats.get('subdomains')}\n**Live:** {stats.get('live_hosts')}\n**Vulns:** {stats.get('vulnerabilities')}", 0x2ecc71)
+        if "scan_complete" in self.notify_on:
+            msg = f"**Duration:** {stats.get('duration')}\n"
+            msg += f"**Subdomains:** {stats.get('subdomains')} (+{stats.get('new_subdomains', 0)} new)\n"
+            msg += f"**Live Hosts:** {stats.get('live_hosts')} (+{stats.get('new_live_hosts', 0)} new)\n"
+            msg += f"**Vulnerabilities:** {stats.get('vulnerabilities')} (+{stats.get('new_vulnerabilities', 0)} new)"
+            self._send("✅ Scan Complete", msg, 0x2ecc71)
     
     def vulnerability(self, name: str, severity: str, target: str):
-        colors = {"critical": 0xff0000, "high": 0xff6600, "medium": 0xffff00}
-        self._send(f"⚠️ {severity.upper()}: {name}", f"**Target:** {target}", colors.get(severity.lower(), 0x7289da))
+        if "vulnerability" in self.notify_on:
+            colors = {"critical": 0xff0000, "high": 0xff6600, "medium": 0xffff00}
+            self._send(f"⚠️ {severity.upper()}: {name}", f"**Target:** {target}", colors.get(severity.lower(), 0x7289da))
+    
+    def new_assets(self, target: str, diff: Dict):
+        """Notify about new assets discovered"""
+        if "new_assets" not in self.notify_on:
+            return
+        
+        new_subs = diff.get("new_subdomains", 0)
+        new_live = diff.get("new_live_hosts", 0)
+        new_vulns = diff.get("new_vulnerabilities", 0)
+        
+        if new_subs == 0 and new_live == 0 and new_vulns == 0:
+            return
+        
+        msg = f"**Target:** {target}\n"
+        msg += f"**Previous Scan:** {diff.get('last_scan', 'Never')}\n\n"
+        
+        if new_subs > 0:
+            msg += f"🔍 **+{new_subs} new subdomains**\n"
+        if new_live > 0:
+            msg += f"🌐 **+{new_live} new live hosts**\n"
+        if new_vulns > 0:
+            msg += f"🎯 **+{new_vulns} new vulnerabilities**\n"
+        
+        color = 0xff0000 if new_vulns > 0 else 0x00ff00
+        self._send("🆕 New Assets Discovered", msg, color)
 
 # ============== CLI COMMANDS ==============
 
@@ -900,6 +1225,17 @@ def cmd_scan(args):
         console.print("[red]✗ No targets provided[/]") if console else print("No targets")
         console.print("[dim]Usage: macaron -s target.com OR macaron -F targets.txt[/]") if console else None
         return 1
+    
+    # Check for resumable scans if --resume flag
+    if args.resume:
+        for target in targets:
+            state_mgr = StateManager(target)
+            info = state_mgr.get_resume_info()
+            if info:
+                if console:
+                    console.print(f"[yellow]⟳ Found saved state for {target}[/]")
+                    console.print(f"  [dim]Mode: {info['mode']}, Stage: {info['stage']}, Saved: {info['saved_at']}[/]")
+                    console.print(f"  [dim]Data: {info['subdomains']} subdomains, {info['live_hosts']} live hosts[/]")
     
     # Mode selection (now supports custom modes from pipeline.yaml)
     if args.mode:
@@ -922,7 +1258,7 @@ def cmd_scan(args):
         quiet=args.quiet
     )
     
-    stats = engine.scan(targets, mode=mode)
+    stats = engine.scan(targets, mode=mode, resume=args.resume)
     return 0 if stats.get("status") == "completed" else 1
 
 def cmd_status(args):
@@ -1204,10 +1540,11 @@ Pipeline Configuration:
     parser.add_argument("--rate", type=int, help="Rate limit (req/s)")
     parser.add_argument("--threads", type=int, help="Threads")
     parser.add_argument("-q", "--quiet", action="store_true", help="Quiet mode")
+    parser.add_argument("--resume", action="store_true", help="Resume interrupted scan")
     
     # Results options
     parser.add_argument("-d", "--domain", help="Filter by domain")
-    parser.add_argument("-w", "--what", choices=["all", "subdomains", "live", "ports", "urls", "js", "vulns"], help="What to show")
+    parser.add_argument("-w", "--what", choices=["all", "subdomains", "live", "ports", "urls", "js", "vulns", "diff"], help="What to show")
     parser.add_argument("--limit", type=int, default=50, help="Limit results")
     
     # Config options
