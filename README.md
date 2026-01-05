@@ -1,32 +1,41 @@
-![Macaron Banner](assets/macaron-banner.png)
-
 # Macaron v2.1 - Security Reconnaissance Platform
 
-**A powerful CLI-based security reconnaissance and asset discovery platform**
+```
+███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗
+████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔═══██╗████╗  ██║
+██╔████╔██║███████║██║     ███████║██████╔╝██║   ██║██╔██╗ ██║
+██║╚██╔╝██║██╔══██║██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║
+██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║
+╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
+```
+
+**A powerful CLI-based security reconnaissance and asset discovery platform for bug bounty hunters**
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## 🎯 Overview
 
-Macaron is a comprehensive security reconnaissance platform designed for bug bounty hunters and security researchers. It automates the discovery and analysis of attack surfaces through intelligent tool orchestration and data correlation.
+Macaron is a comprehensive security reconnaissance platform designed for bug bounty hunters and security researchers. It automates asset discovery through intelligent tool orchestration and stores all data for manual testing.
 
 **Key Features**:
-- 🔍 Automated subdomain discovery with 8+ tools
-- 🌐 HTTP probing and technology detection
-- 🔓 Port scanning and service enumeration
-- 🎯 Vulnerability scanning with Nuclei integration
-- 📊 PostgreSQL database for persistent storage
+- 🔍 Automated subdomain discovery (subfinder, amass, assetfinder, findomain)
+- 🌐 HTTP probing and live host detection (httpx)
+- 🔓 Port scanning (naabu, nmap, masscan)
+- 🕷️ URL crawling and archive mining (katana, gau, waybackurls)
+- 📜 JavaScript file extraction and analysis
+- 🎯 Vulnerability scanning with Nuclei
+- 📊 File-based storage (no database required)
 - 🔔 Discord notifications for real-time updates
-- ⏰ Scheduled scans with cron support
-- 📦 Modular architecture for easy extension
+- ⚙️ YAML-configurable pipeline (customize everything!)
+- 📦 Beautiful CLI with progress bars
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Python 3.9+
-- PostgreSQL database
-- Reconnaissance tools (subfinder, amass, httpx, nuclei, etc.)
+- Kali Linux / Ubuntu / Debian (recommended)
+- Go 1.21+ (for installing recon tools)
 
 ### Installation
 
@@ -35,216 +44,317 @@ Macaron is a comprehensive security reconnaissance platform designed for bug bou
 git clone https://github.com/root-Manas/macaron.git
 cd macaron
 
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Install Python dependencies
+pip install rich pyyaml
 
-# Install package
-pip install -e .
+# Make macaron executable and install globally
+chmod +x macaron
+sudo cp macaron /usr/local/bin/
 
-# Configure environment
-cp .env.example .env
-nano .env  # Edit with your settings
+# Install recon tools (optional - run as needed)
+sudo ./install.sh
 ```
 
-### Required Environment Variables
+### Verify Installation
 
 ```bash
-# Database (Required)
-DATABASE_URL=postgresql://user:password@localhost/recon_db
+# Check version
+macaron --version
 
-# Security
-SECRET_KEY=your-secret-key-here
-
-# Discord Notifications (Optional)
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-
-# API Keys (Optional)
-SHODAN_API_KEY=your-key
-VIRUSTOTAL_API_KEY=your-key
-CHAOS_API_KEY=your-key
-```
-
-### Database Setup
-
-```bash
-# Create database
-createdb recon_db
-
-# Run migrations
-alembic upgrade head
+# List installed tools
+macaron -L
 ```
 
 ## 📖 Usage
 
-### Basic Scanning
+### Quick Reference
+
+| Command | Description |
+|---------|-------------|
+| `macaron -s target.com` | Wide scan (infrastructure recon) |
+| `macaron -s target.com -f` | Fast scan (quick subdomain + probe) |
+| `macaron -s target.com -n` | Narrow scan (app-focused, URL crawling) |
+| `macaron -S` | Show status of all scanned domains |
+| `macaron -R -d target` | Show results for a domain |
+| `macaron -L` | List installed tools |
+| `macaron -P` | Show pipeline config path |
+| `macaron -E -o file.json` | Export results to JSON |
+
+### Scanning Targets
 
 ```bash
-# Scan a single target (WIDE mode - infrastructure focus)
+# Wide mode - Infrastructure reconnaissance (default)
 macaron -s example.com
 
-# Scan multiple targets
-macaron -s example.com test.com
-
-# NARROW mode (application-specific)
-macaron -s https://app.example.com -n
-
-# Fast mode (quick wins)
+# Fast mode - Quick subdomain enumeration + HTTP probe
 macaron -s target.com -f
 
-# Custom mode from YAML
-macaron -s target.com -m custom
+# Narrow mode - Application-focused (URLs, JS, crawling)
+macaron -s https://app.example.com -n
 
-# Resume interrupted scan
-macaron -s -r
+# Scan multiple targets
+macaron -s example.com test.com api.example.com
+
+# Scan from file (one target per line)
+macaron -F targets.txt
+
+# Scan from stdin
+cat targets.txt | macaron --stdin
+
+# Disable proxychains wrapper
+macaron -s target.com --no-proxy
 ```
 
-### Managing Results
+### Viewing Results
 
 ```bash
-# Show scan status
+# Show scan status for all domains
 macaron -S
 
-# Show results for a domain
+# Show all results for a domain
 macaron -R -d example.com
 
-# List installed tools
-macaron -L
+# Show specific result types
+macaron -R -d example.com -w subdomains
+macaron -R -d example.com -w live
+macaron -R -d example.com -w urls
+macaron -R -d example.com -w ports
+macaron -R -d example.com -w js
+macaron -R -d example.com -w vulns
+
+# Limit output
+macaron -R -d example.com --limit 50
 
 # Export to JSON
-macaron -E -o results.json
-
-# Show configuration
-macaron -C
-
-# Show pipeline config path
-macaron -P
+macaron -E -d example.com -o results.json
 ```
 
-### Advanced Options
+### Rate Limiting & Stealth
 
 ```bash
-# Slow mode (10 req/s for rate limiting)
+# Slow mode (10 requests/second)
 macaron -s target.com --slow
 
 # Custom rate limit
 macaron -s target.com --rate 5
 
-# Disable proxychains
-macaron -s target.com --no-proxy
+# With custom threads
+macaron -s target.com --threads 10
+```
 
-# Verbose output
-macaron -s target.com -v
+### Tool Management
 
-# Quiet mode
-macaron -s target.com -q
+```bash
+# List all tools and their status
+macaron -L
 
-# Read targets from file
-macaron -s -F targets.txt
+# Show pipeline configuration path
+macaron -P
 
-# Read from stdin
-cat targets.txt | macaron -s --stdin
+# Install tools (requires sudo)
+macaron -I
 ```
 
 ## 🛠️ Scan Modes
 
-### WIDE Mode (Infrastructure Reconnaissance)
-Comprehensive infrastructure mapping:
-1. **Subdomain Discovery**: subfinder, amass, assetfinder, findomain, crt.sh
-2. **DNS Resolution**: puredns with custom resolvers
-3. **HTTP Probing**: httpx for live host detection
-4. **Port Scanning**: naabu for open port discovery
-5. **Technology Detection**: httpx, wappalyzer
-6. **Screenshot Capture**: gowitness
-7. **Vulnerability Scanning**: nuclei with custom templates
+### WIDE Mode (Default) - Infrastructure Reconnaissance
+Best for: Initial recon, mapping attack surface
+```bash
+macaron -s example.com
+```
 
-### NARROW Mode (Application-Specific)
-Focused application testing:
-1. **URL Discovery**: katana, waybackurls, gau
-2. **JavaScript Analysis**: subjs, linkfinder
-3. **Parameter Discovery**: arjun, paramspider
-4. **Vulnerability Scanning**: nuclei (web-focused templates)
-5. **API Discovery**: endpoint enumeration
+| Stage | Tools | Output |
+|-------|-------|--------|
+| Subdomain Discovery | subfinder, amass, assetfinder, findomain | `subdomains.txt` |
+| DNS Resolution | dnsx | `resolved.txt` |
+| HTTP Probing | httpx | `live.txt` |
+| Port Scanning | naabu | `ports.txt` |
+| Vulnerability Scan | nuclei | `vulns.json` |
 
-## 📁 Directory Structure
+### FAST Mode - Quick Wins
+Best for: Quick assessment, time-limited testing
+```bash
+macaron -s target.com -f
+```
+
+| Stage | Tools | Output |
+|-------|-------|--------|
+| Quick Subdomains | subfinder, assetfinder | `subdomains.txt` |
+| HTTP Probe | httpx | `live.txt` |
+
+### NARROW Mode - Application-Focused
+Best for: Single application testing, deep crawling
+```bash
+macaron -s https://app.example.com -n
+```
+
+| Stage | Tools | Output |
+|-------|-------|--------|
+| URL Archives | gau, waybackurls | `urls.txt` |
+| Web Crawling | katana | `urls.txt` |
+| JS Extraction | custom | `js.txt` |
+| Vulnerability Scan | nuclei (web templates) | `vulns.json` |
+
+## 📁 Data Storage
+
+All scan data is stored in `~/.macaron/data/<domain>/`:
 
 ```
-security-recon-platform/
-├── backend/
-│   ├── scan_engine.py      # Core scanning orchestration
-│   ├── database.py          # SQLAlchemy models
-│   ├── tools.py             # Tool execution and management
-│   ├── notifier.py          # Discord notifications
-│   └── scheduler.py         # Cron job management
-├── shared/
-│   ├── types.py             # Data structures
-│   ├── utils.py             # Utility functions
-│   └── exceptions.py        # Custom exceptions
+~/.macaron/
 ├── config/
-│   ├── config.yaml          # Main configuration
-│   ├── pipeline.yaml        # Tool pipeline definitions
-│   └── resolvers.txt        # DNS resolvers
-├── recon.py                 # CLI entry point
-└── .env                     # Environment variables
+│   └── pipeline.yaml      # ⚙️ EDIT THIS to customize scans!
+├── data/
+│   └── example.com/
+│       ├── subdomains.txt  # Discovered subdomains
+│       ├── live.txt        # Live HTTP hosts
+│       ├── ports.txt       # Open ports
+│       ├── urls.txt        # Discovered URLs
+│       ├── js.txt          # JavaScript files
+│       └── vulns.json      # Nuclei findings
+└── state/
+    └── scan_state.json    # Resume data
 ```
 
-## ⚙️ Configuration
+## ⚙️ Pipeline Configuration
 
-Edit `config/config.yaml` for detailed configuration:
+The magic of Macaron is in `~/.macaron/config/pipeline.yaml`. Edit this file to:
+- Change tool options and flags
+- Add/remove tools from stages
+- Create custom scan modes
+- Adjust timeouts and rate limits
+
+```bash
+# Show pipeline config path
+macaron -P
+
+# Edit the pipeline
+nano ~/.macaron/config/pipeline.yaml
+```
+
+### Example: Customizing Subfinder
 
 ```yaml
-general:
-  data_dir: "./data"
-  logs_dir: "./logs"
-  max_concurrent_scans: 5
+tools:
+  subfinder:
+    cmd: "subfinder"
+    args: "-d {target} -all -recursive -o {output}"
+    timeout: 600
+```
 
-discord:
-  enabled: true
-  notify_on:
-    - scan_start
-    - scan_complete
-    - new_vulnerability
+### Example: Adding a Custom Mode
 
-modules:
-  subdomain_discovery:
-    enabled: true
-    tools:
-      - subfinder
-      - amass
-      - assetfinder
+```yaml
+modes:
+  stealth:
+    description: "Slow and quiet scanning"
+    stages:
+      - name: "Passive Subdomains"
+        tools: ["subfinder"]
+      - name: "Slow HTTP Probe"
+        tools: ["httpx"]
+        input: "subdomains.txt"
+        output: "live.txt"
 ```
 
 ## 🔧 Tool Installation
 
-Install required reconnaissance tools:
+### Quick Install (All Tools)
 
 ```bash
-# Run installation script
-./install.sh
+sudo ./install.sh
+```
 
-# Or install individually
+### Manual Installation
+
+```bash
+# Go tools (requires Go 1.21+)
 go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
 go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
 go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-# ... etc
+go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
+go install -v github.com/projectdiscovery/katana/cmd/katana@latest
+go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+go install -v github.com/tomnomnom/assetfinder@latest
+go install -v github.com/tomnomnom/waybackurls@latest
+go install -v github.com/lc/gau/v2/cmd/gau@latest
+
+# Update nuclei templates
+nuclei -update-templates
 ```
 
-## 📊 Database Schema
+### Check Tool Status
 
-- **targets**: Target domains/IPs
-- **scans**: Scan execution records
-- **assets**: Discovered subdomains, IPs, URLs
-- **endpoints**: HTTP endpoints with metadata
-- **vulnerabilities**: Nuclei findings
-- **cron_jobs**: Scheduled scan configurations
+```bash
+macaron -L
+```
+
+Output:
+```
+╭─────────────┬──────────────┬────────╮
+│ Category    │ Tool         │ Status │
+├─────────────┼──────────────┼────────┤
+│ Subdomain   │ subfinder    │   ✓    │
+│ Subdomain   │ amass        │   ✓    │
+│ HTTP        │ httpx        │   ✓    │
+│ Ports       │ naabu        │   ✓    │
+│ Vulns       │ nuclei       │   ✓    │
+╰─────────────┴──────────────┴────────╯
+```
 
 ## 🔔 Discord Notifications
 
-Configure Discord webhook for real-time updates:
-- Scan start/completion
-- New subdomain discoveries
-- Vulnerability findings
-- Error alerts
+Set up Discord webhook for real-time scan updates:
+
+```bash
+# Set webhook URL
+macaron --webhook "https://discord.com/api/webhooks/..."
+
+# Test the webhook
+macaron --test
+```
+
+## 📊 Example Workflow
+
+```bash
+# 1. Quick recon on new target
+macaron -s target.com -f
+
+# 2. Check what we found
+macaron -R -d target.com
+
+# 3. Deep scan on interesting subdomains
+macaron -s api.target.com -n
+
+# 4. Export everything for manual testing
+macaron -E -d target.com -o target_recon.json
+
+# 5. Check overall status
+macaron -S
+```
+
+## 🎯 Pro Tips
+
+1. **Start with Fast Mode** - Get quick wins first
+   ```bash
+   macaron -s target.com -f
+   ```
+
+2. **Use Narrow Mode for Apps** - When you have a specific application
+   ```bash
+   macaron -s https://app.target.com -n
+   ```
+
+3. **Customize the Pipeline** - Edit `~/.macaron/config/pipeline.yaml` to add your favorite tools
+
+4. **Use Rate Limiting** - Be nice to targets
+   ```bash
+   macaron -s target.com --slow
+   ```
+
+5. **Check Results Often** - Data accumulates across scans
+   ```bash
+   macaron -R -d target.com -w urls | grep api
+   ```
 
 ## 🤝 Contributing
 
@@ -260,23 +370,24 @@ MIT License - see LICENSE file for details
 
 ## ⚠️ Disclaimer
 
-This tool is for authorized security testing only. Always obtain proper authorization before scanning targets.
+This tool is for authorized security testing only. Always obtain proper authorization before scanning targets. The authors are not responsible for misuse.
 
 ## 🙏 Credits
 
+**Author**: [@root-Manas](https://github.com/root-Manas)
+
 Built with:
 - [ProjectDiscovery](https://projectdiscovery.io/) tools
-- [SQLAlchemy](https://www.sqlalchemy.org/)
-- [Rich](https://rich.readthedocs.io/)
-- [Typer](https://typer.tiangolo.com/)
+- [Rich](https://rich.readthedocs.io/) for beautiful CLI
+- [PyYAML](https://pyyaml.org/) for configuration
 
 ## 📞 Support
 
 - GitHub Issues: [Report bugs](https://github.com/root-Manas/macaron/issues)
-- Documentation: [Wiki](https://github.com/root-Manas/macaron/wiki)
+- Pull Requests: [Contribute](https://github.com/root-Manas/macaron/pulls)
 
 ---
 
-**Version**: 2.1.0  
-**Status**: Production Ready (CLI)  
+**Version**: 2.1.1  
+**Status**: Production Ready  
 **Last Updated**: 2026-01-05
