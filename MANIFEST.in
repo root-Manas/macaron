@@ -1,0 +1,18 @@
+# Include configuration files
+include *.md
+include *.txt
+include .env.example
+include LICENSE
+
+# Include config directory
+recursive-include config *.yaml *.yml *.txt
+
+# Include scripts
+recursive-include scripts *.sh *.py
+
+# Exclude unnecessary files
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude __pycache__
+global-exclude .DS_Store
+global-exclude .git*
