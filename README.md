@@ -81,58 +81,69 @@ alembic upgrade head
 
 ```bash
 # Scan a single target (WIDE mode - infrastructure focus)
-python recon.py scan -t example.com -m wide
+macaron -s example.com
 
 # Scan multiple targets
-python recon.py scan -t example.com test.com -m wide
+macaron -s example.com test.com
 
 # NARROW mode (application-specific)
-python recon.py scan -t https://app.example.com -m narrow
+macaron -s https://app.example.com -n
+
+# Fast mode (quick wins)
+macaron -s target.com -f
+
+# Custom mode from YAML
+macaron -s target.com -m custom
 
 # Resume interrupted scan
-python recon.py scan -r
+macaron -s -r
 ```
 
-### Managing Targets
+### Managing Results
 
 ```bash
-# Add target
-python recon.py add target example.com
+# Show scan status
+macaron -S
 
-# Add from file
-python recon.py add targets -f targets.txt
+# Show results for a domain
+macaron -R -d example.com
 
-# List all targets
-python recon.py list targets
+# List installed tools
+macaron -L
 
-# List by program
-python recon.py list targets -p "Bug Bounty Program"
-```
-
-### Exporting Results
-
-```bash
 # Export to JSON
-python recon.py export -f json -o results.json
+macaron -E -o results.json
 
-# Export to CSV
-python recon.py export -f csv -o results.csv
+# Show configuration
+macaron -C
 
-# Export specific target
-python recon.py export -t example.com -f json
+# Show pipeline config path
+macaron -P
 ```
 
-### Scheduling
+### Advanced Options
 
 ```bash
-# Add scheduled scan (daily at 2 AM)
-python recon.py schedule add -t example.com -c "0 2 * * *"
+# Slow mode (10 req/s for rate limiting)
+macaron -s target.com --slow
 
-# List scheduled scans
-python recon.py schedule list
+# Custom rate limit
+macaron -s target.com --rate 5
 
-# Remove scheduled scan
-python recon.py schedule remove <id>
+# Disable proxychains
+macaron -s target.com --no-proxy
+
+# Verbose output
+macaron -s target.com -v
+
+# Quiet mode
+macaron -s target.com -q
+
+# Read targets from file
+macaron -s -F targets.txt
+
+# Read from stdin
+cat targets.txt | macaron -s --stdin
 ```
 
 ## 🛠️ Scan Modes
