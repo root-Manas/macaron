@@ -1,7 +1,11 @@
 import shutil
 import subprocess
+import re
+import logging
 from typing import Dict, List, Optional, Any
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def is_tool_installed(tool: str) -> bool:
@@ -12,6 +16,79 @@ def is_tool_installed(tool: str) -> bool:
 def get_installed_tools() -> Dict[str, bool]:
     """Get installation status of all tools"""
     return {tool: is_tool_installed(tool) for tool in RECON_TOOLS.keys()}
+
+
+def sanitize_input(value: str, input_type: str = "domain") -> str:
+    """
+    Sanitize input to prevent command injection
+    
+    Args:
+        value: Input value to sanitize
+        input_type: Type of input (domain, url, path)
+    
+    Returns:
+        Sanitized value
+    
+    Raises:
+        ValueError: If input contains suspicious characters
+    """
+    if input_type == "domain":
+        # Allow only valid domain characters
+        if not re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$', value):
+            raise ValueError(f"Invalid domain format: {value}")
+    
+    elif input_type == "url":
+        # Basic URL validation
+        if not re.match(r'^https?://[a-zA-Z0-9\-\.]+(:[0-9]+)?(/.*)?$', value):
+            raise ValueError(f"Invalid URL format: {value}")
+    
+    elif input_type == "path":
+        # Prevent path traversal
+        if '..' in value or value.startswith('/'):
+            raise ValueError(f"Invalid path: {value}")
+    
+    # Check for shell metacharacters
+    dangerous_chars = ['$', '`', ';', '|', '&', '>', '<', '\n', '\r']
+    for char in dangerous_chars:
+        if char in value:
+            raise ValueError(f"Suspicious character detected in input: {char}")
+    
+    return value
+
+
+def build_command(tool_config: Dict[str, Any], **kwargs) -> List[str]:
+    """
+    Build command as a list (safe from injection)
+    
+    Args:
+        tool_config: Tool configuration dictionary
+        **kwargs: Arguments to substitute (target, output, input, etc.)
+    
+    Returns:
+        Command as list of strings
+    """
+    cmd_parts = tool_config["command"]
+    
+    # If command is still a string (legacy), convert to list
+    if isinstance(cmd_parts, str):
+        logger.warning(f"Tool command is string format (unsafe): {cmd_parts}")
+        # This is a fallback - tools should be updated to list format
+        cmd_parts = cmd_parts.split()
+    
+    # Build command with substitutions
+    result = []
+    for part in cmd_parts:
+        # Substitute placeholders
+        if '{target}' in part:
+            part = part.replace('{target}', sanitize_input(kwargs.get('target', ''), 'domain'))
+        if '{output}' in part:
+            part = part.replace('{output}', kwargs.get('output', ''))
+        if '{input}' in part:
+            part = part.replace('{input}', kwargs.get('input', ''))
+        
+        result.append(part)
+    
+    return result
 
 
 def run_tool(
@@ -26,7 +103,7 @@ def run_tool(
     
     Args:
         tool_name: Name of the tool from RECON_TOOLS
-        target: Target domain/URL
+        target: Target domain/URL (will be sanitized)
         output_path: Path for output file
         use_proxychains: Whether to use proxychains
         timeout: Override default timeout
@@ -42,23 +119,28 @@ def run_tool(
     if not is_tool_installed(tool_name):
         return {"status": "error", "error": f"Tool not installed: {tool_name}"}
     
-    # Build command
-    cmd_template = tool_config["command"]
-    cmd = cmd_template.format(target=target, output=output_path)
-    
-    # Prepend proxychains if enabled and available
-    if use_proxychains and is_tool_installed("proxychains4"):
-        cmd = f"proxychains4 -q {cmd}"
-    
-    tool_timeout = timeout or tool_config.get("timeout", 600)
-    
     try:
+        # Sanitize inputs
+        target = sanitize_input(target, 'domain')
+        
+        # Build command as list (safe)
+        cmd = build_command(tool_config, target=target, output=output_path)
+        
+        # Prepend proxychains if enabled and available
+        if use_proxychains and is_tool_installed("proxychains4"):
+            cmd = ["proxychains4", "-q"] + cmd
+        
+        tool_timeout = timeout or tool_config.get("timeout", 600)
+        
+        logger.info(f"Running tool: {tool_name} with command: {' '.join(cmd)}")
+        
+        # Run without shell=True (SECURE)
         result = subprocess.run(
             cmd,
-            shell=True,
             timeout=tool_timeout,
             capture_output=True,
-            text=True
+            text=True,
+            shell=False  # IMPORTANT: Never use shell=True with user input
         )
         
         return {
@@ -68,9 +150,17 @@ def run_tool(
             "stderr": result.stderr,
             "output_file": output_path
         }
+    
+    except ValueError as e:
+        logger.error(f"Input validation error: {e}")
+        return {"status": "error", "error": str(e)}
+    
     except subprocess.TimeoutExpired:
+        logger.error(f"Tool {tool_name} timed out after {tool_timeout}s")
         return {"status": "timeout", "error": f"Tool timed out after {tool_timeout}s"}
+    
     except Exception as e:
+        logger.error(f"Tool {tool_name} failed: {e}")
         return {"status": "error", "error": str(e)}
 
 
