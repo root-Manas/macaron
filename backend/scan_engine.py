@@ -200,8 +200,8 @@ class ScanEngine:
         # Notify
         try:
             self.notifier.notify_scan_start(targets, [f"{mode.value} mode"])
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to send scan start notification: {e}")
         
         all_stats = {
             "scan_id": self.state.scan_id,
@@ -278,8 +278,8 @@ class ScanEngine:
         # Notify completion
         try:
             self.notifier.notify_scan_complete(all_stats)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to send scan complete notification: {e}")
         
         return all_stats
     
@@ -467,8 +467,8 @@ class ScanEngine:
         if ctx.subdomains:
             try:
                 self.notifier.notify_new_subdomains(ctx.target, list(ctx.subdomains)[:50])
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to send subdomain notification: {e}")
         
         return ctx
     
