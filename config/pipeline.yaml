@@ -1,5 +1,5 @@
 # ============================================================================
-# MACARON v2 - Pipeline Configuration
+# MACARON v2.3 - Pipeline Configuration
 # ============================================================================
 # This file controls how scans are executed. Edit this to customize:
 #   - Which tools run in each mode (wide/narrow/fast)
@@ -88,7 +88,53 @@ tools:
     output: stdout_lines
     installed_check: curl
     description: "Certificate transparency log search"
-  
+
+  github_subdomains:
+    cmd: "github-subdomains -d {target} -t {github_token} -o {output_file}"
+    timeout: 300
+    input: target
+    output: file
+    installed_check: github-subdomains
+    description: "Find subdomains from GitHub source code"
+
+  # ============ SUBDOMAIN PERMUTATION & BRUTEFORCE ============
+
+  altdns:
+    cmd: "altdns -i {input_file} -o {output_file} -w ~/.macaron/wordlists/altdns-words.txt"
+    timeout: 600
+    input: file
+    output: file
+    installed_check: altdns
+    description: "Generate subdomain permutations"
+
+  dnsgen:
+    cmd: "cat {input_file} | dnsgen - | head -n 50000"
+    timeout: 300
+    input: file
+    output: stdout_lines
+    installed_check: dnsgen
+    description: "Generate subdomain combinations from existing"
+
+  shuffledns:
+    cmd: "shuffledns -d {target} -w {wordlist} -r ~/.macaron/config/resolvers.txt -o {output_file} -silent"
+    timeout: 1800
+    input: target
+    output: file
+    installed_check: shuffledns
+    options:
+      wordlist: "~/.macaron/wordlists/subdomains.txt"
+    description: "Subdomain bruteforce with massdns wrapper"
+
+  puredns:
+    cmd: "puredns bruteforce {wordlist} {target} -r ~/.macaron/config/resolvers.txt -q"
+    timeout: 1800
+    input: target
+    output: stdout_lines
+    installed_check: puredns
+    options:
+      wordlist: "~/.macaron/wordlists/subdomains.txt"
+    description: "Fast subdomain bruteforce with wildcard detection"
+
   # ============ DNS RESOLUTION ============
   
   dnsx:
@@ -99,7 +145,58 @@ tools:
     installed_check: dnsx
     parser: dnsx
     description: "Fast DNS resolver with JSON output"
-  
+
+  dnsx_full:
+    cmd: "dnsx -l {input_file} -a -aaaa -cname -mx -txt -resp -json -silent -t {threads}"
+    timeout: 900
+    input: file
+    output: json_lines
+    installed_check: dnsx
+    parser: dnsx
+    description: "Full DNS record enumeration"
+
+  dnsrecon:
+    cmd: "dnsrecon -d {target} -t axfr -j {output_file}"
+    timeout: 120
+    input: target
+    output: file
+    installed_check: dnsrecon
+    description: "DNS zone transfer attempt"
+
+  # ============ ASN & IP RANGE DISCOVERY ============
+
+  asnmap:
+    cmd: "echo {target} | asnmap -silent"
+    timeout: 120
+    input: target
+    output: stdout_lines
+    installed_check: asnmap
+    description: "Map target to ASN and IP ranges"
+
+  amass_intel:
+    cmd: "amass intel -org '{target}' -max-dns-queries 100"
+    timeout: 600
+    input: target
+    output: stdout_lines
+    installed_check: amass
+    description: "Discover ASNs and netblocks by organization"
+
+  hakrevdns:
+    cmd: "cat {input_file} | hakrevdns -t {threads}"
+    timeout: 600
+    input: file
+    output: stdout_lines
+    installed_check: hakrevdns
+    description: "Reverse DNS lookup on IP ranges"
+
+  mapcidr:
+    cmd: "echo {target} | mapcidr -silent"
+    timeout: 60
+    input: target
+    output: stdout_lines
+    installed_check: mapcidr
+    description: "CIDR range expansion"
+
   # ============ PORT SCANNING ============
   
   naabu:
@@ -119,7 +216,16 @@ tools:
     installed_check: naabu
     parser: naabu
     description: "Quick port scan (common web ports only)"
-  
+
+  naabu_full:
+    cmd: "naabu -l {input_file} -json -silent -p - -rate {rate} -c {threads}"
+    timeout: 7200
+    input: file
+    output: json_lines
+    installed_check: naabu
+    parser: naabu
+    description: "Full port scan (all 65535 ports)"
+
   # ============ HTTP PROBING ============
   
   httpx:
@@ -130,7 +236,42 @@ tools:
     installed_check: httpx
     parser: httpx
     description: "HTTP prober with tech detection and CDN identification"
-  
+
+  httpx_full:
+    cmd: "httpx -l {input_file} -json -silent -sc -title -td -cdn -location -favicon -hash sha256 -jarm -follow-redirects -rate-limit {rate} -threads {threads}"
+    timeout: 2400
+    input: file
+    output: json_lines
+    installed_check: httpx
+    parser: httpx
+    description: "Full HTTP probe with favicon hash and JARM"
+
+  # ============ WEB FINGERPRINTING ============
+
+  whatweb:
+    cmd: "whatweb -i {input_file} --log-json={output_file} -q -t {threads}"
+    timeout: 1200
+    input: file
+    output: file
+    installed_check: whatweb
+    description: "Web technology fingerprinting"
+
+  webanalyze:
+    cmd: "webanalyze -hosts {input_file} -output json -silent"
+    timeout: 600
+    input: file
+    output: stdout_lines
+    installed_check: webanalyze
+    description: "Wappalyzer-based tech detection"
+
+  favfreak:
+    cmd: "cat {input_file} | favfreak"
+    timeout: 600
+    input: file
+    output: stdout_lines
+    installed_check: favfreak
+    description: "Favicon hash for asset correlation"
+
   # ============ URL DISCOVERY ============
   
   gau:
@@ -174,7 +315,51 @@ tools:
     output: stdout_lines
     installed_check: hakrawler
     description: "Fast web crawler for endpoints"
-  
+
+  gospider:
+    cmd: "gospider -S {input_file} -o {output_dir} -c 10 -d 2 --other-source --include-subs -q"
+    timeout: 900
+    input: file
+    output: directory
+    installed_check: gospider
+    description: "Fast web spider with multiple sources"
+
+  # ============ PARAMETER DISCOVERY ============
+
+  paramspider:
+    cmd: "paramspider -d {target} -o {output_file} -s"
+    timeout: 300
+    input: target
+    output: file
+    installed_check: paramspider
+    description: "Mine parameters from web archives"
+
+  arjun:
+    cmd: "arjun -i {input_file} -oJ {output_file} -t {threads} -q"
+    timeout: 1200
+    input: file
+    output: file
+    installed_check: arjun
+    description: "HTTP parameter discovery"
+
+  x8:
+    cmd: "x8 -u {target} -w ~/.macaron/wordlists/params.txt -o {output_file}"
+    timeout: 600
+    input: target
+    output: file
+    installed_check: x8
+    description: "Hidden parameter discovery"
+
+  # ============ API DISCOVERY ============
+
+  kiterunner:
+    cmd: "kr scan {input_file} -w ~/.macaron/wordlists/routes.kite -o json -q"
+    timeout: 1800
+    input: file
+    output: stdout_lines
+    installed_check: kr
+    description: "API endpoint discovery"
+
   # ============ JS ANALYSIS ============
   
   getjs:
@@ -184,7 +369,23 @@ tools:
     output: stdout_lines
     installed_check: getJS
     description: "Extract JavaScript file URLs"
-  
+
+  subjs:
+    cmd: "cat {input_file} | subjs"
+    timeout: 300
+    input: file
+    output: stdout_lines
+    installed_check: subjs
+    description: "Extract JS files from list of URLs"
+
+  linkfinder:
+    cmd: "linkfinder -i {target} -o cli"
+    timeout: 120
+    input: target
+    output: stdout_lines
+    installed_check: linkfinder
+    description: "Find endpoints in JS files"
+
   # ============ CONTENT DISCOVERY ============
   
   ffuf:
@@ -196,7 +397,89 @@ tools:
     options:
       wordlist: "~/.macaron/wordlists/common.txt"
     description: "Fast web fuzzer for content discovery"
-  
+
+  feroxbuster:
+    cmd: "feroxbuster -u {target} -w {wordlist} -o {output_file} -q -t {threads}"
+    timeout: 1200
+    input: target
+    output: file
+    installed_check: feroxbuster
+    options:
+      wordlist: "~/.macaron/wordlists/common.txt"
+    description: "Recursive content discovery"
+
+  # ============ CLOUD ENUMERATION ============
+
+  cloud_enum:
+    cmd: "cloud_enum -k {target} -l {output_file} --disable-azure --disable-gcp"
+    timeout: 600
+    input: target
+    output: file
+    installed_check: cloud_enum
+    description: "Enumerate cloud resources (S3, Azure, GCP)"
+
+  s3scanner:
+    cmd: "s3scanner scan -b {input_file} -o {output_file}"
+    timeout: 600
+    input: file
+    output: file
+    installed_check: s3scanner
+    description: "Scan for open S3 buckets"
+
+  # ============ SUBDOMAIN TAKEOVER ============
+
+  subjack:
+    cmd: "subjack -w {input_file} -t {threads} -o {output_file} -ssl -v"
+    timeout: 600
+    input: file
+    output: file
+    installed_check: subjack
+    description: "Subdomain takeover detection"
+
+  nuclei_takeover:
+    cmd: "nuclei -l {input_file} -t ~/nuclei-templates/takeovers/ -o {output_file} -silent"
+    timeout: 900
+    input: file
+    output: file
+    installed_check: nuclei
+    description: "Subdomain takeover via nuclei templates"
+
+  # ============ OSINT ============
+
+  theHarvester:
+    cmd: "theHarvester -d {target} -b all -f {output_file}"
+    timeout: 600
+    input: target
+    output: file
+    installed_check: theHarvester
+    description: "Email and subdomain OSINT harvesting"
+
+  emailfinder:
+    cmd: "emailfinder -d {target}"
+    timeout: 300
+    input: target
+    output: stdout_lines
+    installed_check: emailfinder
+    description: "Find email addresses for domain"
+
+  # ============ SHODAN & CENSYS ============
+
+  shodan_domain:
+    cmd: "shodan domain {target}"
+    timeout: 120
+    input: target
+    output: stdout_lines
+    installed_check: shodan
+    description: "Shodan domain lookup"
+
+  shodan_search:
+    cmd: "shodan search 'hostname:{target}' --fields ip_str,port,org,hostnames"
+    timeout: 120
+    input: target
+    output: stdout_lines
+    installed_check: shodan
+    description: "Shodan host search"
+
   # ============ SCREENSHOTS ============
   
   gowitness:
@@ -206,39 +489,31 @@ tools:
     output: directory
     installed_check: gowitness
     description: "Screenshot web pages (gowitness v3)"
-  
-  # ============ VULNERABILITY SCANNING ============
-  
-  nuclei:
-    cmd: "nuclei -l {input_file} -o {output_file} -jsonl -silent -severity {severity} -rl {rate} -c {threads} -nh"
-    timeout: 7200
+
+  # ============ ROBOTS & SITEMAP ============
+
+  robots_parser:
+    cmd: "cat {input_file} | xargs -I {} curl -s {}/robots.txt | grep -E '^(Allow|Disallow):' | awk '{print $2}'"
+    timeout: 300
     input: file
-    output: json_lines
-    installed_check: nuclei
-    options:
-      severity: "critical,high,medium"
-    description: "Template-based vulnerability scanner"
-  
-  nuclei_fast:
-    cmd: "nuclei -l {input_file} -o {output_file} -jsonl -silent -severity critical,high -rl {rate} -c {threads} -nh"
-    timeout: 3600
+    output: stdout_lines
+    installed_check: curl
+    description: "Parse robots.txt for paths"
+
+  sitemap_parser:
+    cmd: "cat {input_file} | xargs -I {} curl -s {}/sitemap.xml | grep -oP '(?<=<loc>)[^<]+'"
+    timeout: 300
     input: file
-    output: json_lines
-    installed_check: nuclei
-    description: "Quick vuln scan (critical+high only)"
+    output: stdout_lines
+    installed_check: curl
+    description: "Parse sitemap.xml for URLs"
+
+  # ============ VULNERABILITY SCANNING (Removed - pure recon only) ============
+  # Note: nuclei kept only for subdomain takeover detection
 
 # ------------------------------------------------------------------------------
 # SCAN PIPELINES
 # ------------------------------------------------------------------------------
-# Define what runs in each scan mode. Each stage:
-#   - name: Display name for the stage
-#   - tools: List of tools to run (in parallel within stage)
-#   - input_from: Where to get input (previous stage output or 'target')
-#   - output_to: What asset type this produces
-#   - filter: Optional filter on input (e.g., only .js files)
-#   - enabled: Set to false to skip this stage
-# ------------------------------------------------------------------------------
-
 pipelines:
   # ============ WIDE MODE (Full Infrastructure) ============
   wide:
@@ -251,6 +526,13 @@ pipelines:
         output_to: subdomains
         enabled: true
       
+      - name: "Subdomain Permutation"
+        emoji: "🔀"
+        tools: [dnsgen]
+        input_from: subdomains
+        output_to: subdomains
+        enabled: true
+
       - name: "DNS Resolution"
         emoji: "📡"
         tools: [dnsx]
@@ -268,23 +550,45 @@ pipelines:
       - name: "HTTP Probing"
         emoji: "🌐"
         tools: [httpx]
-        input_from: subdomains+ports  # Combines subdomains with non-standard ports
+        input_from: subdomains+ports
         output_to: live_hosts
         enabled: true
       
+      - name: "Web Fingerprinting"
+        emoji: "🔬"
+        tools: [whatweb]
+        input_from: live_hosts
+        output_to: technologies
+        limit: 100
+        enabled: true
+
       - name: "URL Discovery"
         emoji: "🔗"
         tools: [gau, waybackurls, katana]
         input_from: live_hosts
         output_to: urls
         enabled: true
+
+      - name: "Robots & Sitemap"
+        emoji: "🤖"
+        tools: [robots_parser, sitemap_parser]
+        input_from: live_hosts
+        output_to: urls
+        enabled: true
+
+      - name: "Parameter Mining"
+        emoji: "⚙️"
+        tools: [paramspider]
+        input_from: target
+        output_to: parameters
+        enabled: true
       
-      - name: "JS Analysis"
+      - name: "JS Extraction"
         emoji: "📜"
-        tools: [getjs]
+        tools: [getjs, subjs]
         input_from: live_hosts
         output_to: js_files
-        limit: 20  # Only process first N hosts
+        limit: 50
         enabled: true
       
       - name: "Screenshots"
@@ -292,14 +596,14 @@ pipelines:
         tools: [gowitness]
         input_from: live_hosts
         output_to: screenshots
-        limit: 50
+        limit: 100
         enabled: true
-      
-      - name: "Vulnerability Scan"
-        emoji: "🎯"
-        tools: [nuclei]
-        input_from: live_hosts
-        output_to: vulnerabilities
+
+      - name: "Subdomain Takeover"
+        emoji: "🚨"
+        tools: [subjack]
+        input_from: subdomains
+        output_to: takeovers
         enabled: true
 
   # ============ NARROW MODE (Application Focused) ============
@@ -308,7 +612,7 @@ pipelines:
     stages:
       - name: "DNS Validation"
         emoji: "📡"
-        tools: [dnsx]
+        tools: [dnsx_full]
         input_from: target
         output_to: resolved
         enabled: true
@@ -322,14 +626,21 @@ pipelines:
       
       - name: "HTTP Probing"
         emoji: "🌐"
-        tools: [httpx]
+        tools: [httpx_full]
         input_from: target
         output_to: live_hosts
+        enabled: true
+
+      - name: "Web Fingerprinting"
+        emoji: "🔬"
+        tools: [whatweb]
+        input_from: live_hosts
+        output_to: technologies
         enabled: true
       
       - name: "Deep Crawling"
         emoji: "🕷️"
-        tools: [katana_deep, hakrawler]
+        tools: [katana_deep, hakrawler, gospider]
         input_from: live_hosts
         output_to: urls
         enabled: true
@@ -340,10 +651,25 @@ pipelines:
         input_from: target
         output_to: urls
         enabled: true
+
+      - name: "Robots & Sitemap"
+        emoji: "🤖"
+        tools: [robots_parser, sitemap_parser]
+        input_from: live_hosts
+        output_to: urls
+        enabled: true
+
+      - name: "Parameter Discovery"
+        emoji: "⚙️"
+        tools: [paramspider, arjun]
+        input_from: live_hosts
+        output_to: parameters
+        limit: 10
+        enabled: true
       
       - name: "JS Analysis"
         emoji: "📜"
-        tools: [getjs]
+        tools: [getjs, linkfinder]
         input_from: live_hosts
         output_to: js_files
         enabled: true
@@ -353,7 +679,7 @@ pipelines:
         tools: [ffuf]
         input_from: live_hosts
         output_to: content
-        limit: 3
+        limit: 5
         enabled: true
       
       - name: "Screenshots"
@@ -362,17 +688,10 @@ pipelines:
         input_from: live_hosts
         output_to: screenshots
         enabled: true
-      
-      - name: "Vulnerability Scan"
-        emoji: "🎯"
-        tools: [nuclei]
-        input_from: live_hosts
-        output_to: vulnerabilities
-        enabled: true
 
-  # ============ FAST MODE (Quick Wins) ============
+  # ============ FAST MODE (Quick Recon) ============
   fast:
-    description: "Quick scan for immediate wins"
+    description: "Quick reconnaissance scan"
     stages:
       - name: "Quick Subdomains"
         emoji: "🔍"
@@ -389,20 +708,203 @@ pipelines:
         limit: 100
         enabled: true
       
-      - name: "Quick Vuln Scan"
-        emoji: "🎯"
-        tools: [nuclei_fast]
+      - name: "Quick URLs"
+        emoji: "🔗"
+        tools: [gau]
+        input_from: target
+        output_to: urls
+        enabled: true
+
+      - name: "Screenshots"
+        emoji: "📸"
+        tools: [gowitness]
         input_from: live_hosts
-        output_to: vulnerabilities
+        output_to: screenshots
         limit: 50
+        enabled: true
+
+  # ============ OSINT MODE (Intelligence Gathering) ============
+  osint:
+    description: "OSINT and passive reconnaissance"
+    stages:
+      - name: "Subdomain Discovery"
+        emoji: "🔍"
+        tools: [subfinder, amass, crtsh]
+        input_from: target
+        output_to: subdomains
+        enabled: true
+
+      - name: "ASN Discovery"
+        emoji: "🌍"
+        tools: [asnmap, amass_intel]
+        input_from: target
+        output_to: asn_info
+        enabled: true
+
+      - name: "Email Harvesting"
+        emoji: "📧"
+        tools: [theHarvester]
+        input_from: target
+        output_to: emails
+        enabled: true
+
+      - name: "Shodan Recon"
+        emoji: "👁️"
+        tools: [shodan_domain]
+        input_from: target
+        output_to: shodan_data
+        enabled: true
+
+      - name: "Cloud Enumeration"
+        emoji: "☁️"
+        tools: [cloud_enum]
+        input_from: target
+        output_to: cloud_assets
+        enabled: true
+
+  # ============ DEEP MODE (Comprehensive) ============
+  deep:
+    description: "Deep comprehensive reconnaissance"
+    stages:
+      - name: "Subdomain Discovery"
+        emoji: "🔍"
+        tools: [subfinder, assetfinder, findomain, crtsh, amass]
+        input_from: target
+        output_to: subdomains
+        enabled: true
+
+      - name: "Subdomain Bruteforce"
+        emoji: "🔨"
+        tools: [shuffledns]
+        input_from: target
+        output_to: subdomains
+        enabled: true
+
+      - name: "Subdomain Permutation"
+        emoji: "🔀"
+        tools: [dnsgen, altdns]
+        input_from: subdomains
+        output_to: subdomains
+        enabled: true
+
+      - name: "DNS Resolution"
+        emoji: "📡"
+        tools: [dnsx_full]
+        input_from: subdomains
+        output_to: resolved
+        enabled: true
+
+      - name: "Reverse DNS"
+        emoji: "🔄"
+        tools: [hakrevdns]
+        input_from: resolved
+        output_to: reverse_dns
+        enabled: true
+
+      - name: "Full Port Scan"
+        emoji: "🔌"
+        tools: [naabu]
+        input_from: resolved
+        output_to: ports
+        enabled: true
+
+      - name: "HTTP Probing"
+        emoji: "🌐"
+        tools: [httpx_full]
+        input_from: subdomains+ports
+        output_to: live_hosts
+        enabled: true
+
+      - name: "Favicon Hashing"
+        emoji: "🎨"
+        tools: [favfreak]
+        input_from: live_hosts
+        output_to: favicon_hashes
+        enabled: true
+
+      - name: "Web Fingerprinting"
+        emoji: "🔬"
+        tools: [whatweb, webanalyze]
+        input_from: live_hosts
+        output_to: technologies
+        enabled: true
+
+      - name: "Deep Crawling"
+        emoji: "🕷️"
+        tools: [katana_deep, gospider]
+        input_from: live_hosts
+        output_to: urls
+        enabled: true
+
+      - name: "URL Archives"
+        emoji: "🔗"
+        tools: [gau, waybackurls]
+        input_from: target
+        output_to: urls
+        enabled: true
+
+      - name: "Robots & Sitemap"
+        emoji: "🤖"
+        tools: [robots_parser, sitemap_parser]
+        input_from: live_hosts
+        output_to: urls
+        enabled: true
+
+      - name: "Parameter Discovery"
+        emoji: "⚙️"
+        tools: [paramspider, arjun]
+        input_from: live_hosts
+        output_to: parameters
+        limit: 20
+        enabled: true
+
+      - name: "API Discovery"
+        emoji: "🔌"
+        tools: [kiterunner]
+        input_from: live_hosts
+        output_to: api_endpoints
+        limit: 20
+        enabled: true
+
+      - name: "JS Extraction"
+        emoji: "📜"
+        tools: [getjs, subjs, linkfinder]
+        input_from: live_hosts
+        output_to: js_files
+        enabled: true
+
+      - name: "Content Discovery"
+        emoji: "📂"
+        tools: [ffuf, feroxbuster]
+        input_from: live_hosts
+        output_to: content
+        limit: 10
+        enabled: true
+
+      - name: "Cloud Enumeration"
+        emoji: "☁️"
+        tools: [cloud_enum, s3scanner]
+        input_from: target
+        output_to: cloud_assets
+        enabled: true
+
+      - name: "Subdomain Takeover"
+        emoji: "🚨"
+        tools: [subjack, nuclei_takeover]
+        input_from: subdomains
+        output_to: takeovers
+        enabled: true
+
+      - name: "Screenshots"
+        emoji: "📸"
+        tools: [gowitness]
+        input_from: live_hosts
+        output_to: screenshots
         enabled: true
 
 # ------------------------------------------------------------------------------
 # OUTPUT PARSERS
 # ------------------------------------------------------------------------------
-# Define how to parse JSON output from tools
-# ------------------------------------------------------------------------------
-
 parsers:
   dnsx:
     host_field: "host"
@@ -417,6 +919,7 @@ parsers:
     tech_field: "tech"
     status_field: "status_code"
     title_field: "title"
+    favicon_field: "favicon_hash"
 
 # ------------------------------------------------------------------------------
 # NOTIFICATIONS
@@ -427,42 +930,6 @@ discord:
   notify_on:
     - scan_start
     - scan_complete
-    - vulnerability_found
+    - new_assets
   
-  # Only notify for these severity levels
   vuln_severity: [critical, high]
-
-# ------------------------------------------------------------------------------
-# CUSTOMIZATION EXAMPLES
-# ------------------------------------------------------------------------------
-# 
-# To disable a tool in wide mode:
-#   1. Find the stage in pipelines.wide.stages
-#   2. Remove the tool from the tools list, or
-#   3. Set enabled: false on the stage
-#
-# To change subfinder options:
-#   1. Find tools.subfinder.cmd
-#   2. Edit the command string
-#   Example: Add "-sources crtsh,github" to only use specific sources
-#
-# To add a new tool:
-#   1. Add a new entry under tools:
-#      mytool:
-#        cmd: "mytool -input {input_file} -output {output_file}"
-#        timeout: 300
-#        input: file
-#        output: stdout_lines
-#        installed_check: mytool
-#   2. Add it to a pipeline stage
-#
-# To create a custom pipeline:
-#   1. Add new entry under pipelines:
-#      custom:
-#        description: "My custom scan"
-#        stages:
-#          - name: "My Stage"
-#            tools: [tool1, tool2]
-#            ...
-#   2. Run with: macaron -s target.com -m custom
-# ------------------------------------------------------------------------------

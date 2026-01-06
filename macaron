@@ -49,7 +49,7 @@ except ImportError:
 
 # ============== CONSTANTS ==============
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 BANNER = """[bold cyan]
 ███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗
 ████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔═══██╗████╗  ██║
@@ -519,7 +519,404 @@ class StateManager:
             }
         return None
 
-# ============== SCAN CONTEXT ==============
+# ============== SCREENSHOT GALLERY ==============
+
+class ScreenshotGallery:
+    """Generate HTML gallery from screenshots"""
+    
+    HTML_TEMPLATE = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screenshot Gallery - {target}</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 20px;
+        }}
+        .header {{
+            text-align: center;
+            padding: 30px 0;
+            border-bottom: 1px solid #30363d;
+            margin-bottom: 30px;
+        }}
+        .header h1 {{
+            color: #58a6ff;
+            font-size: 2em;
+            margin-bottom: 10px;
+        }}
+        .header .meta {{
+            color: #8b949e;
+            font-size: 0.9em;
+        }}
+        .stats {{
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin: 20px 0;
+        }}
+        .stat {{
+            background: #161b22;
+            padding: 15px 25px;
+            border-radius: 8px;
+            border: 1px solid #30363d;
+        }}
+        .stat-value {{
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #58a6ff;
+        }}
+        .stat-label {{
+            color: #8b949e;
+            font-size: 0.85em;
+        }}
+        .filters {{
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }}
+        .filter-btn {{
+            background: #21262d;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }}
+        .filter-btn:hover, .filter-btn.active {{
+            background: #58a6ff;
+            color: #0d1117;
+            border-color: #58a6ff;
+        }}
+        .search-box {{
+            display: flex;
+            justify-content: center;
+            margin: 20px 0;
+        }}
+        .search-box input {{
+            width: 400px;
+            max-width: 90%;
+            padding: 12px 16px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            font-size: 1em;
+        }}
+        .search-box input:focus {{
+            outline: none;
+            border-color: #58a6ff;
+        }}
+        .gallery {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 20px;
+            padding: 20px 0;
+        }}
+        .card {{
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            overflow: hidden;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }}
+        .card:hover {{
+            transform: translateY(-4px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }}
+        .card-img {{
+            width: 100%;
+            height: 250px;
+            object-fit: cover;
+            object-position: top;
+            cursor: pointer;
+            border-bottom: 1px solid #30363d;
+        }}
+        .card-body {{
+            padding: 15px;
+        }}
+        .card-title {{
+            font-size: 0.9em;
+            color: #58a6ff;
+            word-break: break-all;
+            margin-bottom: 8px;
+        }}
+        .card-title a {{
+            color: #58a6ff;
+            text-decoration: none;
+        }}
+        .card-title a:hover {{
+            text-decoration: underline;
+        }}
+        .card-meta {{
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }}
+        .badge {{
+            font-size: 0.75em;
+            padding: 3px 8px;
+            border-radius: 4px;
+            background: #21262d;
+            color: #8b949e;
+        }}
+        .badge.status-2xx {{ background: #238636; color: white; }}
+        .badge.status-3xx {{ background: #1f6feb; color: white; }}
+        .badge.status-4xx {{ background: #da3633; color: white; }}
+        .badge.status-5xx {{ background: #6e40c9; color: white; }}
+        .modal {{
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }}
+        .modal.active {{
+            display: flex;
+        }}
+        .modal img {{
+            max-width: 95%;
+            max-height: 95%;
+            border-radius: 8px;
+        }}
+        .modal-close {{
+            position: fixed;
+            top: 20px;
+            right: 30px;
+            font-size: 2em;
+            color: white;
+            cursor: pointer;
+        }}
+        .no-results {{
+            text-align: center;
+            padding: 60px;
+            color: #8b949e;
+        }}
+        @media (max-width: 600px) {{
+            .gallery {{
+                grid-template-columns: 1fr;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🖼️ Screenshot Gallery</h1>
+        <div class="meta">Target: <strong>{target}</strong> | Generated: {timestamp}</div>
+    </div>
+    
+    <div class="stats">
+        <div class="stat">
+            <div class="stat-value">{total_screenshots}</div>
+            <div class="stat-label">Screenshots</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{unique_hosts}</div>
+            <div class="stat-label">Unique Hosts</div>
+        </div>
+    </div>
+    
+    <div class="search-box">
+        <input type="text" id="search" placeholder="Search URLs..." onkeyup="filterCards()">
+    </div>
+    
+    <div class="filters">
+        <button class="filter-btn active" onclick="filterByStatus('all')">All</button>
+        <button class="filter-btn" onclick="filterByStatus('2xx')">2xx</button>
+        <button class="filter-btn" onclick="filterByStatus('3xx')">3xx</button>
+        <button class="filter-btn" onclick="filterByStatus('4xx')">4xx</button>
+        <button class="filter-btn" onclick="filterByStatus('5xx')">5xx</button>
+    </div>
+    
+    <div class="gallery" id="gallery">
+        {cards}
+    </div>
+    
+    <div class="no-results" id="no-results" style="display:none;">
+        No screenshots match your search.
+    </div>
+    
+    <div class="modal" id="modal" onclick="closeModal()">
+        <span class="modal-close">&times;</span>
+        <img id="modal-img" src="" alt="">
+    </div>
+    
+    <script>
+        function openModal(src) {{
+            document.getElementById('modal-img').src = src;
+            document.getElementById('modal').classList.add('active');
+        }}
+        
+        function closeModal() {{
+            document.getElementById('modal').classList.remove('active');
+        }}
+        
+        document.addEventListener('keydown', function(e) {{
+            if (e.key === 'Escape') closeModal();
+        }});
+        
+        let currentFilter = 'all';
+        
+        function filterByStatus(status) {{
+            currentFilter = status;
+            document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            filterCards();
+        }}
+        
+        function filterCards() {{
+            const search = document.getElementById('search').value.toLowerCase();
+            const cards = document.querySelectorAll('.card');
+            let visible = 0;
+            
+            cards.forEach(card => {{
+                const url = card.dataset.url.toLowerCase();
+                const status = card.dataset.status;
+                const matchesSearch = url.includes(search);
+                const matchesFilter = currentFilter === 'all' || status.startsWith(currentFilter[0]);
+                
+                if (matchesSearch && matchesFilter) {{
+                    card.style.display = 'block';
+                    visible++;
+                }} else {{
+                    card.style.display = 'none';
+                }}
+            }});
+            
+            document.getElementById('no-results').style.display = visible === 0 ? 'block' : 'none';
+        }}
+    </script>
+</body>
+</html>'''
+
+    CARD_TEMPLATE = '''<div class="card" data-url="{url}" data-status="{status}">
+        <img class="card-img" src="{img_path}" alt="{url}" onclick="openModal('{img_path}')" loading="lazy">
+        <div class="card-body">
+            <div class="card-title"><a href="{url}" target="_blank">{url}</a></div>
+            <div class="card-meta">
+                <span class="badge status-{status_class}">{status}</span>
+                {title_badge}
+            </div>
+        </div>
+    </div>'''
+
+    @classmethod
+    def generate(cls, screenshots_dir: Path, target: str, output_file: Path = None) -> Path:
+        """Generate HTML gallery from screenshot directory"""
+        if not screenshots_dir.exists():
+            return None
+        
+        # Find all screenshots
+        screenshots = list(screenshots_dir.glob("*.png")) + list(screenshots_dir.glob("*.jpg"))
+        if not screenshots:
+            return None
+        
+        cards_html = []
+        unique_hosts = set()
+        
+        for img_path in sorted(screenshots):
+            # Parse URL from filename (gowitness format: scheme-host-port.png)
+            filename = img_path.stem
+            
+            # Try to reconstruct URL from filename
+            url = cls._filename_to_url(filename)
+            if not url:
+                url = filename
+            
+            # Extract host
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                unique_hosts.add(parsed.netloc or url)
+            except:
+                unique_hosts.add(url)
+            
+            # Detect status code from filename or default
+            status = "200"
+            status_class = "2xx"
+            if "-" in filename:
+                parts = filename.split("-")
+                for part in parts:
+                    if part.isdigit() and len(part) == 3:
+                        status = part
+                        if status.startswith("2"):
+                            status_class = "2xx"
+                        elif status.startswith("3"):
+                            status_class = "3xx"
+                        elif status.startswith("4"):
+                            status_class = "4xx"
+                        elif status.startswith("5"):
+                            status_class = "5xx"
+                        break
+            
+            # Title badge (extract from filename if available)
+            title_badge = ""
+            
+            card = cls.CARD_TEMPLATE.format(
+                url=url,
+                img_path=img_path.name,
+                status=status,
+                status_class=status_class,
+                title_badge=title_badge
+            )
+            cards_html.append(card)
+        
+        # Generate full HTML
+        html = cls.HTML_TEMPLATE.format(
+            target=target,
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            total_screenshots=len(screenshots),
+            unique_hosts=len(unique_hosts),
+            cards="\n".join(cards_html)
+        )
+        
+        # Write to file
+        if output_file is None:
+            output_file = screenshots_dir / "gallery.html"
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(html)
+        
+        return output_file
+    
+    @staticmethod
+    def _filename_to_url(filename: str) -> str:
+        """Convert gowitness filename back to URL"""
+        # gowitness format: http-example-com-8080.png or https-sub-example-com.png
+        filename = filename.replace(".png", "").replace(".jpg", "")
+        
+        if filename.startswith("http-"):
+            scheme = "http"
+            rest = filename[5:]
+        elif filename.startswith("https-"):
+            scheme = "https"
+            rest = filename[6:]
+        else:
+            return None
+        
+        # Replace dashes with dots, but handle port at end
+        parts = rest.rsplit("-", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            host = parts[0].replace("-", ".")
+            port = parts[1]
+            if (scheme == "http" and port == "80") or (scheme == "https" and port == "443"):
+                return f"{scheme}://{host}"
+            return f"{scheme}://{host}:{port}"
+        else:
+            host = rest.replace("-", ".")
+            return f"{scheme}://{host}"
 
 @dataclass
 class ScanContext:
@@ -863,6 +1260,13 @@ class MacaronEngine:
             # Save diff report and history
             diff_tracker.save_diff_report()
             diff_tracker.save()
+            
+            # Generate screenshot gallery if screenshots exist
+            screenshots_dir = output_dir / "gowitness"
+            if screenshots_dir.exists():
+                gallery_path = ScreenshotGallery.generate(screenshots_dir, target)
+                if gallery_path and console and not self.quiet:
+                    console.print(f"  [green]✓[/] Screenshot gallery: [dim]{gallery_path}[/]")
             
             # Update stats
             stats["subdomains"] += len(ctx.get("subdomains", []))
@@ -1518,20 +1922,59 @@ def cmd_show(args):
     
     return 0
 
+def cmd_gallery(args):
+    """Generate screenshot gallery for a domain"""
+    if not args.domain:
+        console.print("[red]✗ Please specify a domain with -d[/]") if console else print("Specify domain")
+        return 1
+    
+    # Find the target directory
+    target_dir = None
+    if DATA_DIR.exists():
+        for d in DATA_DIR.iterdir():
+            if d.is_dir() and args.domain.lower() in d.name.lower():
+                target_dir = d
+                break
+    
+    if not target_dir:
+        console.print(f"[red]✗ No data found for domain: {args.domain}[/]") if console else print("Domain not found")
+        return 1
+    
+    screenshots_dir = target_dir / "gowitness"
+    if not screenshots_dir.exists():
+        console.print(f"[yellow]No screenshots found for {args.domain}[/]") if console else print("No screenshots")
+        return 1
+    
+    gallery_path = ScreenshotGallery.generate(screenshots_dir, args.domain)
+    if gallery_path:
+        console.print(f"[green]✓ Gallery generated: {gallery_path}[/]") if console else print(f"Gallery: {gallery_path}")
+        console.print(f"[dim]Open in browser: file://{gallery_path}[/]") if console else None
+        return 0
+    else:
+        console.print(f"[red]✗ Failed to generate gallery[/]") if console else print("Failed")
+        return 1
+
 def cmd_tools(args):
     """List tools"""
     if not console:
         return 1
     
     categories = {
-        "Subdomain": ["subfinder", "amass", "assetfinder", "findomain"],
-        "DNS": ["dnsx", "massdns"],
+        "Subdomain": ["subfinder", "amass", "assetfinder", "findomain", "github-subdomains"],
+        "Permutation": ["altdns", "dnsgen", "shuffledns", "puredns"],
+        "DNS": ["dnsx", "massdns", "dnsrecon", "hakrevdns"],
+        "ASN/IP": ["asnmap", "mapcidr"],
         "Ports": ["naabu", "masscan", "nmap"],
         "HTTP": ["httpx", "httprobe"],
-        "URLs": ["gau", "waybackurls", "katana", "hakrawler"],
-        "JS": ["getJS"],
+        "Fingerprint": ["whatweb", "webanalyze", "favfreak"],
+        "URLs": ["gau", "waybackurls", "katana", "hakrawler", "gospider"],
+        "Parameters": ["paramspider", "arjun", "x8"],
+        "API": ["kr"],
+        "JS": ["getJS", "subjs", "linkfinder"],
         "Content": ["ffuf", "feroxbuster"],
-        "Vulns": ["nuclei"],
+        "Cloud": ["cloud_enum", "s3scanner"],
+        "Takeover": ["subjack"],
+        "OSINT": ["theHarvester", "emailfinder", "shodan"],
         "Screenshots": ["gowitness", "eyewitness"],
         "Utils": ["proxychains4", "jq", "curl"]
     }
@@ -1671,19 +2114,28 @@ def cmd_install(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="macaron",
-        description="Macaron v2.1 - YAML-Configured Security Reconnaissance",
+        description="Macaron v2.3 - Security Reconnaissance Platform",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   macaron -s example.com              Wide scan (default)
   macaron -s app.com -n               Narrow scan (app-focused)
   macaron -s target.com -f            Fast scan (quick wins)
-  macaron -s target.com -m custom     Custom pipeline from YAML
+  macaron -s target.com -m deep       Deep comprehensive scan
+  macaron -s target.com -m osint      OSINT reconnaissance
   macaron -s target.com --slow        Slow mode (10 req/s)
   macaron -S                          Show status
   macaron -L                          List tools
   macaron -R -d example.com           Show results
+  macaron -G -d example.com           Generate screenshot gallery
   macaron -P                          Show pipeline config path
+
+Scan Modes:
+  wide   - Full infrastructure reconnaissance (default)
+  narrow - Application-focused testing
+  fast   - Quick reconnaissance
+  osint  - OSINT and passive reconnaissance
+  deep   - Comprehensive deep scan
 
 Pipeline Configuration:
   Edit ~/.macaron/config/pipeline.yaml to customize:
@@ -1698,6 +2150,7 @@ Pipeline Configuration:
     parser.add_argument("-s", "--scan", dest="target", nargs="*", metavar="TARGET", help="Scan target(s)")
     parser.add_argument("-S", "--status", action="store_true", help="Show status & summary")
     parser.add_argument("-R", "--results", action="store_true", help="Show results")
+    parser.add_argument("-G", "--gallery", action="store_true", help="Generate screenshot gallery")
     parser.add_argument("-L", "--list-tools", action="store_true", help="List installed tools")
     parser.add_argument("-E", "--export", action="store_true", help="Export results")
     parser.add_argument("-I", "--install", action="store_true", help="Install recon tools (sudo)")
@@ -1705,7 +2158,7 @@ Pipeline Configuration:
     parser.add_argument("-P", "--pipeline", action="store_true", help="Show pipeline.yaml path")
     
     # Scan options
-    parser.add_argument("-m", "--mode", metavar="MODE", help="Scan mode (wide/narrow/fast/custom)")
+    parser.add_argument("-m", "--mode", metavar="MODE", help="Scan mode (wide/narrow/fast/osint/deep)")
     parser.add_argument("-f", "--fast", action="store_true", help="Fast mode (minimal tools)")
     parser.add_argument("-n", "--narrow", action="store_true", help="Narrow mode (app-focused)")
     parser.add_argument("-F", "--file", metavar="FILE", help="Targets from file")
@@ -1743,6 +2196,8 @@ Pipeline Configuration:
         return cmd_status(args)
     elif args.results:
         return cmd_show(args)
+    elif args.gallery:
+        return cmd_gallery(args)
     elif args.list_tools:
         return cmd_tools(args)
     elif args.pipeline:
