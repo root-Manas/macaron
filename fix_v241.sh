@@ -3,7 +3,6 @@
 import shutil
 import subprocess
 import sys
-import re
 
 # Backup
 shutil.copy('macaron', 'macaron.bak')
@@ -13,6 +12,8 @@ with open('macaron', 'r', encoding='utf-8') as f:
 
 new_lines = []
 i = 0
+in_go_tools_loop = False
+
 while i < len(lines):
     line = lines[i]
     
@@ -23,26 +24,29 @@ while i < len(lines):
         i += 1
         continue
     
-    # Fix 2: Go tool name extraction - match exact context
+    # Track when we enter the go_tools loop
     if "for tool in go_tools:" in line:
+        in_go_tools_loop = True
         new_lines.append(line)
         i += 1
-        # Next line should be the name extraction
-        if i < len(lines) and "name = tool.split('/')[-1].split('@')[0]" in lines[i]:
-            # Replace with multi-line fix
-            indent = "        "
-            new_lines.append(f"{indent}# Extract tool name properly (handle v2/v3/cmd paths)\n")
-            new_lines.append(f"{indent}parts = tool.split('/')\n")
-            new_lines.append(f"{indent}name = parts[-1].split('@')[0]\n")
-            new_lines.append(f"{indent}if name in ('v2', 'v3', 'cmd'):\n")
-            new_lines.append(f"{indent}    for p in reversed(parts[:-1]):\n")
-            new_lines.append(f"{indent}        if p not in ('v2', 'v3', 'cmd'):\n")
-            new_lines.append(f"{indent}            name = p\n")
-            new_lines.append(f"{indent}            break\n")
-            i += 1  # Skip original line
         continue
     
-    # Fix 3: Cargo check - match exact lines
+    # Fix 2: Go tool name extraction - ONLY inside go_tools loop
+    if in_go_tools_loop and line.strip() == "name = tool.split('/')[-1].split('@')[0]":
+        in_go_tools_loop = False  # Only apply once
+        indent = "        "
+        new_lines.append(f"{indent}# Extract tool name properly (handle v2/v3/cmd paths)\n")
+        new_lines.append(f"{indent}parts = tool.split('/')\n")
+        new_lines.append(f"{indent}name = parts[-1].split('@')[0]\n")
+        new_lines.append(f"{indent}if name in ('v2', 'v3', 'cmd'):\n")
+        new_lines.append(f"{indent}    for p in reversed(parts[:-1]):\n")
+        new_lines.append(f"{indent}        if p not in ('v2', 'v3', 'cmd'):\n")
+        new_lines.append(f"{indent}            name = p\n")
+        new_lines.append(f"{indent}            break\n")
+        i += 1  # Skip original line
+        continue
+    
+    # Fix 3: Cargo check - match exact comment
     if line.strip() == "# x8 (Rust)":
         # Check next two lines match expected pattern
         if (i + 2 < len(lines) and 
@@ -77,7 +81,7 @@ print(f"  Cargo fix: {'✓' if 'cargo not installed' in c else '✗'}")
 print("\nVerifying syntax...")
 result = subprocess.run(['python3', '-m', 'py_compile', 'macaron'], capture_output=True, text=True)
 if result.returncode != 0:
-    print(f"Syntax error: {result.stderr}")
+    print(f"Syntax error:\n{result.stderr}")
     print("Restoring backup.")
     shutil.copy('macaron.bak', 'macaron')
     sys.exit(1)
@@ -88,9 +92,13 @@ if '2.4.1' in c and 'Extract tool name' in c and 'cargo not installed' in c:
     result = subprocess.run(['python3', '-m', 'pytest', 'tests/', '-q'])
     if result.returncode == 0:
         print("\nTests passed. Committing...")
-        subprocess.run(['git', 'add', 'macaron', 'fix_v241.sh'])
+        subprocess.run(['git', 'add', 'macaron'])
         subprocess.run(['git', 'commit', '-m', 'fix: v2.4.1 - Installer cargo check and Go name extraction'])
         subprocess.run(['git', 'push', 'origin', 'main'])
+        # Cleanup
+        import os
+        if os.path.exists('macaron.bak'):
+            os.remove('macaron.bak')
         print("Done!")
     else:
         print("Tests failed. Restoring backup.")
