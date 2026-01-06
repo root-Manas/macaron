@@ -87,6 +87,7 @@ macaron -L
 | `macaron -R -d target` | Show results for a domain |
 | `macaron -G -d target` | Generate screenshot gallery |
 | `macaron -L` | List installed tools (48+) |
+| `macaron -U` | Update macaron to latest version |
 | `macaron -P` | Show pipeline config path |
 | `macaron -E -o file.json` | Export results to JSON |
 

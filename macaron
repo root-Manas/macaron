@@ -2109,6 +2109,103 @@ def cmd_install(args):
     console.print("[green]✓ Installation complete![/]") if console else print("Done!")
     return 0
 
+def cmd_update(args):
+    """Self-update macaron from GitHub"""
+    if console:
+        console.print("[cyan]Checking for updates...[/]")
+    
+    repo_url = "https://github.com/root-Manas/macaron"
+    raw_url = "https://raw.githubusercontent.com/root-Manas/macaron/main/macaron"
+    
+    try:
+        import urllib.request
+        
+        # Fetch latest version from GitHub
+        version_check_url = "https://raw.githubusercontent.com/root-Manas/macaron/main/macaron"
+        with urllib.request.urlopen(version_check_url, timeout=15) as response:
+            remote_content = response.read().decode('utf-8')
+        
+        # Extract version from remote
+        remote_version = None
+        for line in remote_content.split('\n'):
+            if line.strip().startswith('VERSION = "'):
+                remote_version = line.split('"')[1]
+                break
+        
+        if not remote_version:
+            console.print("[red]✗ Could not determine remote version[/]") if console else print("Version check failed")
+            return 1
+        
+        if console:
+            console.print(f"  Current version: [cyan]{VERSION}[/]")
+            console.print(f"  Latest version:  [cyan]{remote_version}[/]")
+        
+        # Compare versions
+        if remote_version == VERSION:
+            console.print("[green]✓ Already up to date![/]") if console else print("Already up to date")
+            return 0
+        
+        if console:
+            console.print(f"\n[yellow]Update available: {VERSION} → {remote_version}[/]")
+        
+        # Find current script location
+        current_script = Path(__file__).resolve()
+        
+        # Check if we can write to the location
+        if not os.access(current_script.parent, os.W_OK):
+            if console:
+                console.print("[yellow]⚠ Need elevated permissions to update[/]")
+                console.print(f"\n[dim]Run with sudo:[/]")
+                console.print(f"  sudo macaron -U")
+                console.print(f"\n[dim]Or manually update:[/]")
+                console.print(f"  curl -sL {raw_url} -o {current_script}")
+            return 1
+        
+        # Download and update
+        if console:
+            console.print("[cyan]Downloading update...[/]")
+        
+        # Backup current version
+        backup_path = current_script.with_suffix('.bak')
+        shutil.copy(current_script, backup_path)
+        
+        try:
+            # Write new version
+            with open(current_script, 'w', encoding='utf-8') as f:
+                f.write(remote_content)
+            
+            # Make executable
+            os.chmod(current_script, 0o755)
+            
+            # Clean up backup
+            backup_path.unlink()
+            
+            if console:
+                console.print(f"[green]✓ Updated to {remote_version}![/]")
+                console.print(f"[dim]Restart macaron to use the new version[/]")
+            else:
+                print(f"Updated to {remote_version}")
+            
+            return 0
+            
+        except Exception as e:
+            # Restore backup on failure
+            if backup_path.exists():
+                shutil.copy(backup_path, current_script)
+                backup_path.unlink()
+            raise e
+            
+    except urllib.error.URLError as e:
+        console.print(f"[red]✗ Network error: {e.reason}[/]") if console else print(f"Network error: {e}")
+        return 1
+    except Exception as e:
+        console.print(f"[red]✗ Update failed: {e}[/]") if console else print(f"Update failed: {e}")
+        if console:
+            console.print(f"\n[dim]Manual update:[/]")
+            console.print(f"  git clone {repo_url}")
+            console.print(f"  cd macaron && sudo cp macaron /usr/local/bin/")
+        return 1
+
 # ============== MAIN ==============
 
 def main():
@@ -2128,6 +2225,7 @@ Examples:
   macaron -L                          List tools
   macaron -R -d example.com           Show results
   macaron -G -d example.com           Generate screenshot gallery
+  macaron -U                          Update macaron to latest
   macaron -P                          Show pipeline config path
 
 Scan Modes:
@@ -2152,6 +2250,7 @@ Pipeline Configuration:
     parser.add_argument("-R", "--results", action="store_true", help="Show results")
     parser.add_argument("-G", "--gallery", action="store_true", help="Generate screenshot gallery")
     parser.add_argument("-L", "--list-tools", action="store_true", help="List installed tools")
+    parser.add_argument("-U", "--update", action="store_true", help="Update macaron to latest version")
     parser.add_argument("-E", "--export", action="store_true", help="Export results")
     parser.add_argument("-I", "--install", action="store_true", help="Install recon tools (sudo)")
     parser.add_argument("-C", "--config", action="store_true", help="Show config")
@@ -2200,6 +2299,8 @@ Pipeline Configuration:
         return cmd_gallery(args)
     elif args.list_tools:
         return cmd_tools(args)
+    elif args.update:
+        return cmd_update(args)
     elif args.pipeline:
         # Show pipeline config path
         ensure_dir(CONFIG_DIR)
