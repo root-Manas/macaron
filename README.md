@@ -9,7 +9,7 @@
 ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
 ```
 
-**Security reconnaissance platform for bug bounty hunters. 48 tools. 5 scan modes. Pure recon.**
+**Security reconnaissance platform for bug bounty hunters. 47 tools. 5 scan modes. Pure recon.**
 
 ## Installation
 
@@ -61,7 +61,7 @@ CONFIGURATION:
   --test                  Test Discord webhook
 
 TOOLS:
-  -L, --list-tools        List all 48 tools and install status
+  -L, --list-tools        List all 47 tools and install status
   -I, --install           Install recon tools (requires sudo)
   -U, --update            Update macaron to latest version
 
@@ -255,7 +255,7 @@ macaron -s example.com -m deep
 ```
 Runs: All 18 stages including bruteforce, permutation, full port scan, API discovery, cloud enumeration
 
-## Tools (48)
+## Tools (47)
 
 | Category | Tools |
 |----------|-------|
@@ -267,7 +267,7 @@ Runs: All 18 stages including bruteforce, permutation, full port scan, API disco
 | HTTP | httpx, httprobe |
 | Fingerprint | whatweb, webanalyze, favfreak |
 | URLs | gau, waybackurls, katana, hakrawler, gospider |
-| Parameters | paramspider, arjun, x8 |
+| Parameters | paramspider, arjun |
 | API | kiterunner |
 | JS | getJS, subjs, linkfinder |
 | Content | ffuf, feroxbuster |
@@ -371,4 +371,4 @@ MIT
 For authorized security testing only. Always obtain permission before scanning.
 
 ---
-**v2.3.0** | [GitHub](https://github.com/root-Manas/macaron)
+**v2.4.1** | [GitHub](https://github.com/root-Manas/macaron)

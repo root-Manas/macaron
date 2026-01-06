@@ -49,7 +49,7 @@ except ImportError:
 
 # ============== CONSTANTS ==============
 
-VERSION = "2.4.1"
+VERSION = "2.4.0"
 BANNER = """[bold cyan]
 ███╗   ███╗ █████╗  ██████╗ █████╗ ██████╗  ██████╗ ███╗   ██╗
 ████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔═══██╗████╗  ██║
@@ -2151,14 +2151,7 @@ def cmd_install(args):
     # Install Go tools
     console.print("\n[bold cyan]Installing Go tools...[/]") if console else None
     for tool in go_tools:
-        # Extract tool name properly (handle v2/v3/cmd paths)
-        parts = tool.split('/')
-        name = parts[-1].split('@')[0]
-        if name in ('v2', 'v3', 'cmd'):
-            for p in reversed(parts[:-1]):
-                if p not in ('v2', 'v3', 'cmd'):
-                    name = p
-                    break
+        name = tool.split('/')[-1].split('@')[0]
         console.print(f"  [dim]go install[/] {name}") if console else print(f"Installing {name}")
         result = subprocess.run(["go", "install", tool], capture_output=True, text=True)
         if result.returncode != 0:
@@ -2195,6 +2188,10 @@ def cmd_install(args):
         "bash", "-c",
         "cd /tmp && git clone https://github.com/assetnote/kiterunner.git 2>/dev/null && cd kiterunner && make build && cp dist/kr /usr/local/bin/ 2>/dev/null"
     ], capture_output=True)
+    
+    # x8 (Rust)
+    console.print("  [dim]Installing[/] x8") if console else None
+    subprocess.run(["cargo", "install", "x8"], capture_output=True)
     
     # favfreak
     console.print("  [dim]Installing[/] favfreak") if console else None
