@@ -74,8 +74,11 @@ CONFIG_FILE = CONFIG_DIR / "config.yaml"
 BUNDLED_PIPELINE = Path(__file__).parent / "config" / "pipeline.yaml"
 BUNDLED_CONFIG = Path(__file__).parent / "config" / "config.yaml"
 
-# Console for Rich output
-console = Console() if RICH_AVAILABLE else None
+# Console for Rich output (force terminal to avoid issues in non-TTY)
+try:
+    console = Console(force_terminal=True, stderr=True) if RICH_AVAILABLE else None
+except Exception:
+    console = None
 
 # ============== PIPELINE CONFIG ==============
 
@@ -1416,11 +1419,14 @@ class MacaronEngine:
             output_file = str(ctx["output_dir"] / f"{tool_name}_output.json")
         
         # Build context for tool execution
+        tool_output_dir = ctx["output_dir"] / tool_name
+        ensure_dir(tool_output_dir)
+        
         tool_ctx = {
             "target": input_data[0] if input_data else ctx["target"],
             "input_file": temp_file or "",
             "output_file": output_file or "",
-            "output_dir": str(ctx["output_dir"] / tool_name),
+            "output_dir": str(tool_output_dir),
             "wordlist": str(Path(tool_cfg.get("options", {}).get("wordlist", "~/.macaron/wordlists/common.txt")).expanduser()),
             "severity": tool_cfg.get("options", {}).get("severity", "critical,high,medium"),
             "depth": tool_cfg.get("options", {}).get("depth", 3),
