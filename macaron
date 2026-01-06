@@ -2081,38 +2081,158 @@ def cmd_install(args):
     
     console.print("[cyan]Installing reconnaissance tools...[/]") if console else print("Installing...")
     
-    # Install Go tools
+    # Go tools (ProjectDiscovery + community)
     go_tools = [
+        # Subdomain enumeration
         "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
-        "github.com/projectdiscovery/httpx/cmd/httpx@latest",
-        "github.com/projectdiscovery/dnsx/cmd/dnsx@latest",
-        "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
-        "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
-        "github.com/projectdiscovery/katana/cmd/katana@latest",
         "github.com/tomnomnom/assetfinder@latest",
-        "github.com/tomnomnom/waybackurls@latest",
-        "github.com/sensepost/gowitness@latest",
-        "github.com/ffuf/ffuf/v2@latest",
-        "github.com/hakluke/hakrawler@latest",
+        "github.com/gwen001/github-subdomains@latest",
+        # DNS
+        "github.com/projectdiscovery/dnsx/cmd/dnsx@latest",
+        "github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest",
+        "github.com/d3mondev/puredns/v2@latest",
+        "github.com/hakluke/hakrevdns@latest",
+        # ASN/IP
+        "github.com/projectdiscovery/asnmap/cmd/asnmap@latest",
+        "github.com/projectdiscovery/mapcidr/cmd/mapcidr@latest",
+        # Ports
+        "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
+        # HTTP
+        "github.com/projectdiscovery/httpx/cmd/httpx@latest",
+        "github.com/tomnomnom/httprobe@latest",
+        # URLs
         "github.com/lc/gau/v2/cmd/gau@latest",
+        "github.com/tomnomnom/waybackurls@latest",
+        "github.com/projectdiscovery/katana/cmd/katana@latest",
+        "github.com/hakluke/hakrawler@latest",
+        "github.com/jaeles-project/gospider@latest",
+        # JS
         "github.com/003random/getJS@latest",
+        "github.com/lc/subjs@latest",
+        # Content
+        "github.com/ffuf/ffuf/v2@latest",
+        # Takeover
+        "github.com/haccer/subjack@latest",
+        # Screenshots
+        "github.com/sensepost/gowitness@latest",
+        # Nuclei (for takeover templates)
+        "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
+    ]
+    
+    # Python tools
+    pip_tools = [
+        "dnsgen",
+        "altdns",
+        "arjun",
+        "paramspider",
+        "linkfinder",
+        "s3scanner",
+    ]
+    
+    # APT packages (Debian/Ubuntu/Kali)
+    apt_tools = [
+        "amass",
+        "findomain",
+        "massdns",
+        "nmap",
+        "masscan",
+        "whatweb",
+        "feroxbuster",
+        "theharvester",
+        "eyewitness",
+        "dnsrecon",
+        "jq",
+        "proxychains4",
     ]
     
     os.environ["GOPATH"] = str(Path.home() / "go")
     os.environ["PATH"] = os.environ["PATH"] + ":" + str(Path.home() / "go" / "bin")
     
+    # Install Go tools
+    console.print("\n[bold cyan]Installing Go tools...[/]") if console else None
     for tool in go_tools:
         name = tool.split('/')[-1].split('@')[0]
-        console.print(f"  Installing {name}...") if console else print(f"Installing {name}")
-        subprocess.run(["go", "install", tool], capture_output=True)
+        console.print(f"  [dim]go install[/] {name}") if console else print(f"Installing {name}")
+        result = subprocess.run(["go", "install", tool], capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print(f"    [yellow]⚠ Failed[/]") if console else None
     
-    # Copy to /usr/local/bin
+    # Copy Go binaries to /usr/local/bin
     go_bin = Path.home() / "go" / "bin"
     if go_bin.exists():
         for f in go_bin.iterdir():
-            shutil.copy(str(f), "/usr/local/bin/")
+            try:
+                shutil.copy(str(f), "/usr/local/bin/")
+            except Exception:
+                pass
     
-    console.print("[green]✓ Installation complete![/]") if console else print("Done!")
+    # Install Python tools
+    console.print("\n[bold cyan]Installing Python tools...[/]") if console else None
+    for tool in pip_tools:
+        console.print(f"  [dim]pip install[/] {tool}") if console else print(f"Installing {tool}")
+        subprocess.run(["pip3", "install", tool], capture_output=True)
+    
+    # Install APT packages
+    console.print("\n[bold cyan]Installing system packages...[/]") if console else None
+    subprocess.run(["apt-get", "update", "-qq"], capture_output=True)
+    for tool in apt_tools:
+        console.print(f"  [dim]apt install[/] {tool}") if console else print(f"Installing {tool}")
+        subprocess.run(["apt-get", "install", "-y", "-qq", tool], capture_output=True)
+    
+    # Install additional tools that need special handling
+    console.print("\n[bold cyan]Installing additional tools...[/]") if console else None
+    
+    # Kiterunner
+    console.print("  [dim]Installing[/] kiterunner") if console else None
+    subprocess.run([
+        "bash", "-c",
+        "cd /tmp && git clone https://github.com/assetnote/kiterunner.git 2>/dev/null && cd kiterunner && make build && cp dist/kr /usr/local/bin/ 2>/dev/null"
+    ], capture_output=True)
+    
+    # x8 (Rust)
+    console.print("  [dim]Installing[/] x8") if console else None
+    subprocess.run(["cargo", "install", "x8"], capture_output=True)
+    
+    # favfreak
+    console.print("  [dim]Installing[/] favfreak") if console else None
+    subprocess.run([
+        "bash", "-c",
+        "pip3 install mmh3 && cd /tmp && git clone https://github.com/devanshbatham/FavFreak.git 2>/dev/null && cp FavFreak/favfreak.py /usr/local/bin/favfreak && chmod +x /usr/local/bin/favfreak 2>/dev/null"
+    ], capture_output=True)
+    
+    # webanalyze
+    console.print("  [dim]Installing[/] webanalyze") if console else None
+    subprocess.run(["go", "install", "github.com/rverton/webanalyze/cmd/webanalyze@latest"], capture_output=True)
+    
+    # cloud_enum
+    console.print("  [dim]Installing[/] cloud_enum") if console else None
+    subprocess.run([
+        "bash", "-c",
+        "cd /tmp && git clone https://github.com/initstring/cloud_enum.git 2>/dev/null && cd cloud_enum && pip3 install -r requirements.txt && ln -sf $(pwd)/cloud_enum.py /usr/local/bin/cloud_enum 2>/dev/null"
+    ], capture_output=True)
+    
+    # emailfinder
+    console.print("  [dim]Installing[/] emailfinder") if console else None
+    subprocess.run(["pip3", "install", "emailfinder"], capture_output=True)
+    
+    # Update nuclei templates
+    console.print("\n[bold cyan]Updating nuclei templates...[/]") if console else None
+    subprocess.run(["nuclei", "-update-templates"], capture_output=True)
+    
+    # Create resolvers file if missing
+    resolvers_file = Path.home() / ".macaron" / "config" / "resolvers.txt"
+    if not resolvers_file.exists():
+        console.print("\n[bold cyan]Creating resolvers file...[/]") if console else None
+        resolvers_file.parent.mkdir(parents=True, exist_ok=True)
+        resolvers = [
+            "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1",
+            "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220"
+        ]
+        with open(resolvers_file, 'w') as f:
+            f.write('\n'.join(resolvers))
+    
+    console.print("\n[green]✓ Installation complete![/]") if console else print("Done!")
+    console.print("[dim]Run 'macaron -L' to check installed tools[/]") if console else None
     return 0
 
 def cmd_update(args):
