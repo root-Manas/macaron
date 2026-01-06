@@ -174,7 +174,7 @@ macaron -s example.com
 |-------|-------|--------|
 | Subdomain Discovery | subfinder, amass, assetfinder, findomain | `subdomains.txt` |
 | DNS Resolution | dnsx | `resolved.txt` |
-| HTTP Probing | httpx | `live.txt` |
+| HTTP Probing | httpx | `live_hosts.txt` |
 | Port Scanning | naabu | `ports.txt` |
 | Vulnerability Scan | nuclei | `vulns.json` |
 
@@ -187,7 +187,7 @@ macaron -s target.com -f
 | Stage | Tools | Output |
 |-------|-------|--------|
 | Quick Subdomains | subfinder, assetfinder | `subdomains.txt` |
-| HTTP Probe | httpx | `live.txt` |
+| HTTP Probe | httpx | `live_hosts.txt` |
 
 ### NARROW Mode - Application-Focused
 Best for: Single application testing, deep crawling
@@ -199,7 +199,7 @@ macaron -s https://app.example.com -n
 |-------|-------|--------|
 | URL Archives | gau, waybackurls | `urls.txt` |
 | Web Crawling | katana | `urls.txt` |
-| JS Extraction | custom | `js.txt` |
+| JS Extraction | custom | `js_files.txt` |
 | Vulnerability Scan | nuclei (web templates) | `vulns.json` |
 
 ## 🆕 Diff Tracking (NEW in v2.2)
@@ -261,10 +261,10 @@ All scan data is stored in `~/.macaron/data/<domain>/`:
 ├── data/
 │   └── example.com/
 │       ├── subdomains.txt  # Discovered subdomains
-│       ├── live.txt        # Live HTTP hosts
+│       ├── live_hosts.txt  # Live HTTP hosts
 │       ├── ports.txt       # Open ports
 │       ├── urls.txt        # Discovered URLs
-│       ├── js.txt          # JavaScript files
+│       ├── js_files.txt    # JavaScript files
 │       ├── vulns.json      # Nuclei findings
 │       ├── diff_report.txt # New assets since last scan
 │       └── .scan_history.json  # Previous scan data
@@ -439,5 +439,5 @@ This tool is for authorized security testing only. Always obtain proper authoriz
 
 **Version**: 2.2.0  
 **Status**: Production Ready  
-**Last Updated**: 2026-01-05
+**Last Updated**: 2026-01-06
 
