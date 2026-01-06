@@ -3,7 +3,7 @@ Macaron - Security Reconnaissance Platform
 A CLI-based automated security reconnaissance and asset discovery tool
 """
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 __author__ = "root-Manas"
 __license__ = "MIT"
 
