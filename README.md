@@ -371,4 +371,4 @@ MIT
 For authorized security testing only. Always obtain permission before scanning.
 
 ---
-**v2.4.1** | [GitHub](https://github.com/root-Manas/macaron)
+**v2.4.2** | [GitHub](https://github.com/root-Manas/macaron)
