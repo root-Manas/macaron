@@ -27,6 +27,26 @@ macaron status
 macaron serve --addr 127.0.0.1:8088
 ```
 
+## WSL PDTM PATH Fix
+
+If you see:
+
+`[INF] Path /home/<user>/.pdtm/go/bin not configured in environment variable $PATH`
+
+run:
+
+```bash
+echo 'export PATH="$HOME/.pdtm/go/bin:$PATH"' >> ~/.bashrc
+echo 'export PATH="$HOME/.pdtm/go/bin:$PATH"' >> ~/.profile
+source ~/.bashrc
+```
+
+Verify:
+
+```bash
+echo "$PATH" | tr ':' '\n' | rg ".pdtm/go/bin" || grep -q ".pdtm/go/bin" <<< "$PATH" && echo "pdtm path set"
+```
+
 ## Core Commands
 
 ```bash
