@@ -249,9 +249,10 @@ func run() int {
 
 	start := time.Now()
 	modeVal := model.Mode(strings.ToLower(mode))
+	enabledStages := app.ParseStages(stages)
 	var renderer *cliui.LiveRenderer
 	if !quiet {
-		renderer = cliui.NewLiveRenderer(os.Stdout)
+		renderer = cliui.NewLiveRenderer(os.Stdout, enabledStages)
 		defer renderer.Close()
 	}
 	if !quiet {
@@ -263,7 +264,7 @@ func run() int {
 		Rate:          rate,
 		Threads:       threads,
 		Quiet:         quiet,
-		EnabledStages: app.ParseStages(stages),
+		EnabledStages: enabledStages,
 		APIKeys:       config.APIKeys,
 		Progress: func(ev model.StageEvent) {
 			if renderer != nil {
