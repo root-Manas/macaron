@@ -3,114 +3,207 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>macaronV2 Threat Console</title>
+  <title>macaronV2 Ops Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <style>
     :root {
-      --bg: #060b10;
-      --panel: #0e1720;
-      --panel-2: #131f2a;
-      --ink: #e4ecf5;
-      --muted: #8aa0b5;
-      --line: #233445;
-      --accent: #2df8b0;
-      --danger: #ff617e;
-      --warn: #ffc857;
+      --bg: #071018;
+      --bg-2: #0c1924;
+      --panel: #0f2130;
+      --panel-2: #12283a;
+      --line: #1f3a51;
+      --ink: #e9f1fa;
+      --muted: #8faac2;
+      --accent: #4dfbc6;
+      --accent-2: #59b7ff;
+      --critical: #ff6f8f;
+      --warning: #ffcc66;
       --radius: 14px;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       color: var(--ink);
+      font-family: "Sora", system-ui, sans-serif;
       background:
-        radial-gradient(circle at 15% -10%, #15354b 0, transparent 32%),
-        radial-gradient(circle at 90% 0%, #1d203d 0, transparent 28%),
-        linear-gradient(180deg, #05090e 0%, #070d14 100%);
-      font-family: "Space Grotesk", system-ui, sans-serif;
+        radial-gradient(circle at 0% 0%, #113552 0, transparent 28%),
+        radial-gradient(circle at 100% 5%, #1f254d 0, transparent 26%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
       min-height: 100vh;
     }
-    .grid {
-      display: grid;
-      grid-template-columns: 320px 1fr;
-      gap: 14px;
-      max-width: 1460px;
+    .shell {
+      max-width: 1580px;
       margin: 0 auto;
-      padding: 16px;
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 330px 1fr;
+    }
+    .topbar {
+      grid-column: 1 / -1;
+      border: 1px solid var(--line);
+      background: linear-gradient(120deg, #102334, #0b1927);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+    .title {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .tagline { color: var(--muted); font-size: 13px; }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 11px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 12px;
+      color: var(--accent);
+      background: #0a1723;
     }
     .panel {
-      background: linear-gradient(180deg, var(--panel), var(--panel-2));
       border: 1px solid var(--line);
       border-radius: var(--radius);
-      box-shadow: 0 20px 60px rgba(0,0,0,.35);
+      background: linear-gradient(180deg, var(--panel), var(--panel-2));
+      box-shadow: 0 18px 60px rgba(0,0,0,.35);
     }
-    .header { padding: 16px 18px; margin-bottom: 14px; }
-    .title { margin: 0; font-size: 28px; letter-spacing: .04em; text-transform: uppercase; }
-    .subtitle { color: var(--muted); margin-top: 6px; }
-    .left { padding: 12px; height: calc(100vh - 32px); overflow: hidden; display: flex; flex-direction: column; }
+    .left { padding: 12px; display: flex; flex-direction: column; max-height: calc(100vh - 110px); }
     .search {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 10px;
-      background: #09131d;
+      background: #0a1824;
       color: var(--ink);
-      padding: 10px 12px;
-      outline: none;
-      margin-bottom: 12px;
-      font-family: "JetBrains Mono", monospace;
+      padding: 10px;
+      font-family: "IBM Plex Mono", monospace;
+      margin-bottom: 10px;
     }
-    .scan-list { overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+    .scan-list { overflow: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 3px; }
     .scan {
       border: 1px solid var(--line);
-      border-radius: 11px;
+      border-radius: 12px;
       padding: 10px;
-      background: #08111a;
+      background: #0a1722;
       cursor: pointer;
-      transition: all .18s ease;
+      transition: all .15s ease;
     }
     .scan:hover { border-color: var(--accent); transform: translateY(-1px); }
-    .scan.active { border-color: var(--accent); background: #0c1722; }
-    .scan b { display: block; margin-bottom: 4px; }
-    .scan .m { color: var(--muted); font-size: 12px; }
-    .right { padding: 14px; }
-    .stats { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 10px; }
-    .stat { background: #0a141f; border: 1px solid var(--line); border-radius: 11px; padding: 10px; }
-    .stat .k { color: var(--muted); font-size: 12px; }
-    .stat .v { font-weight: 700; font-size: 24px; margin-top: 4px; color: var(--accent); }
-    .split { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; margin-top: 12px; }
-    .box { background: #0a141f; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
-    .box h3 { margin: 0 0 8px; font-size: 13px; color: #9fc2dc; letter-spacing: .08em; text-transform: uppercase; }
-    #map { height: 360px; border-radius: 10px; border: 1px solid #1b2b3d; }
-    ul { margin: 0; padding: 0; list-style: none; max-height: 360px; overflow: auto; }
-    li { font-family: "JetBrains Mono", monospace; font-size: 12px; border-bottom: 1px dashed #1d2d3c; padding: 6px 0; }
-    .sev-critical, .sev-high { color: var(--danger); }
-    .sev-medium { color: var(--warn); }
-    .footer { color: var(--muted); margin-top: 10px; font-size: 12px; }
-    @media (max-width: 1180px) {
-      .grid { grid-template-columns: 1fr; }
-      .left { height: auto; max-height: 340px; }
-      .stats { grid-template-columns: repeat(3, minmax(0,1fr)); }
+    .scan.active { border-color: var(--accent); background: #0f2232; }
+    .scan .name { font-weight: 700; margin-bottom: 4px; }
+    .scan .meta { color: var(--muted); font-size: 12px; }
+
+    .right { padding: 12px; display: grid; gap: 12px; }
+    .summary { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 9px; }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: #0b1a27;
+      padding: 10px;
+    }
+    .metric .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    .metric .v { font-size: 23px; font-weight: 700; margin-top: 4px; color: var(--accent); }
+
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+    .tab {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 7px 10px;
+      background: #0b1723;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+    }
+    .tab.active { border-color: var(--accent); color: var(--accent); }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .split { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; }
+    .box {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #0b1a27;
+      padding: 12px;
+    }
+    .box h3 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #9fc6e4;
+    }
+    #map { height: 350px; border: 1px solid #1b3247; border-radius: 10px; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      font-family: "IBM Plex Mono", monospace;
+    }
+    th, td { border-bottom: 1px dashed #1b3349; padding: 6px 0; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+    td a { color: var(--accent-2); text-decoration: none; }
+    .sev-critical, .sev-high { color: var(--critical); }
+    .sev-medium { color: var(--warning); }
+
+    .timeline { display: flex; flex-direction: column; gap: 8px; }
+    .stage {
+      display: grid;
+      grid-template-columns: 140px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      font-family: "IBM Plex Mono", monospace;
+    }
+    .bar {
+      height: 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      overflow: hidden;
+      background: #09131d;
+    }
+    .fill { height: 100%; background: linear-gradient(90deg, #49f5bf, #4da2ff); }
+
+    .muted { color: var(--muted); }
+    .mono { font-family: "IBM Plex Mono", monospace; }
+
+    @media (max-width: 1260px) {
+      .shell { grid-template-columns: 1fr; }
+      .left { max-height: 300px; }
+      .summary { grid-template-columns: repeat(3, minmax(0,1fr)); }
       .split { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <div class="grid">
+  <div class="shell">
+    <section class="topbar">
+      <div>
+        <h1 class="title">macaronV2 OPS Console</h1>
+        <div class="tagline">Intent-first recon: setup -> scan -> inspect -> export</div>
+      </div>
+      <div class="pill mono" id="pulse">loading scans...</div>
+    </section>
+
     <aside class="panel left">
-      <input id="search" class="search" placeholder="filter target..." />
+      <input id="search" class="search" placeholder="search target / mode / id" />
       <div id="scanList" class="scan-list"></div>
     </aside>
-    <main>
-      <section class="panel header">
-        <h1 class="title">macaronV2 Threat Console</h1>
-        <div class="subtitle">SQLite indexed scans, per-target storage, stage-aware pipeline, and geo heat map.</div>
-      </section>
-      <section class="panel right" id="detail">
-        <div class="subtitle">Select a scan to inspect results.</div>
-      </section>
+
+    <main class="panel right" id="detail">
+      <div class="muted">Select a scan from the left panel.</div>
     </main>
   </div>
 
@@ -118,34 +211,74 @@
     let scans = [];
     let activeId = null;
     let map = null;
-    let markers = [];
+    let mapMarkers = [];
 
-    function list(items, render, empty = 'No data') {
-      if (!items || !items.length) return `<div class="footer">${empty}</div>`;
-      return `<ul>${items.slice(0, 200).map(render).join('')}</ul>`;
+    function fmtDate(raw) {
+      if (!raw) return '-';
+      return new Date(raw).toLocaleString();
+    }
+
+    function stageData(stats) {
+      const values = [
+        { name: 'subdomains', v: stats.subdomains || 0 },
+        { name: 'http/live', v: stats.live_hosts || 0 },
+        { name: 'ports', v: stats.ports || 0 },
+        { name: 'urls', v: stats.urls || 0 },
+        { name: 'js', v: stats.js_files || 0 },
+        { name: 'vulns', v: stats.vulns || 0 },
+      ];
+      const max = Math.max(...values.map(x => x.v), 1);
+      return values.map(s => ({ ...s, pct: Math.max(3, Math.round((s.v / max) * 100)) }));
     }
 
     function drawMap(points) {
       if (!map) {
-        map = L.map('map', { worldCopyJump: true }).setView([20, 10], 2);
+        map = L.map('map', { worldCopyJump: true }).setView([18, 0], 2);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '&copy; OpenStreetMap contributors'
         }).addTo(map);
       }
-      markers.forEach(m => map.removeLayer(m));
-      markers = [];
+      mapMarkers.forEach(m => map.removeLayer(m));
+      mapMarkers = [];
       (points || []).forEach(p => {
-        const radius = Math.max(6, Math.min(22, p.count * 3));
+        const radius = Math.max(6, Math.min(24, p.count * 2));
         const marker = L.circleMarker([p.lat, p.lon], {
           radius,
-          color: '#2df8b0',
-          fillColor: '#2df8b0',
-          fillOpacity: 0.3,
-          weight: 2
+          color: '#4dfbc6',
+          fillColor: '#4dfbc6',
+          fillOpacity: 0.28,
+          weight: 2,
         }).addTo(map);
         marker.bindPopup(`<b>${p.country || 'Unknown'}</b><br>${p.city || ''}<br>hits: ${p.count}`);
-        markers.push(marker);
+        mapMarkers.push(marker);
       });
+    }
+
+    function scanCard(s) {
+      return `
+        <div class="scan ${s.id === activeId ? 'active' : ''}" data-id="${s.id}">
+          <div class="name">${s.target}</div>
+          <div class="meta">${s.mode} | live ${s.stats.live_hosts} | urls ${s.stats.urls}</div>
+          <div class="meta">${fmtDate(s.finished_at)}</div>
+        </div>
+      `;
+    }
+
+    function renderScanList(items) {
+      const root = document.getElementById('scanList');
+      root.innerHTML = items.map(scanCard).join('');
+      root.querySelectorAll('.scan').forEach(node => {
+        node.addEventListener('click', () => {
+          activeId = node.getAttribute('data-id');
+          renderScanList(items);
+          loadResult(activeId);
+        });
+      });
+      if (!activeId && items[0]) {
+        activeId = items[0].id;
+        renderScanList(items);
+        loadResult(activeId);
+      }
     }
 
     async function loadHeat() {
@@ -157,78 +290,130 @@
       } catch (_) {}
     }
 
-    async function loadResult(id) {
-      const res = await fetch('/api/results?id=' + encodeURIComponent(id));
-      const r = await res.json();
-      document.getElementById('detail').innerHTML = `
-        <h2 style="margin:0">${r.target}</h2>
-        <div class="footer">scan ${r.id} | mode ${r.mode} | duration ${r.duration_ms}ms</div>
-        <div class="stats" style="margin-top:12px">
-          <div class="stat"><div class="k">subdomains</div><div class="v">${r.stats.subdomains}</div></div>
-          <div class="stat"><div class="k">live</div><div class="v">${r.stats.live_hosts}</div></div>
-          <div class="stat"><div class="k">ports</div><div class="v">${r.stats.ports}</div></div>
-          <div class="stat"><div class="k">urls</div><div class="v">${r.stats.urls}</div></div>
-          <div class="stat"><div class="k">js</div><div class="v">${r.stats.js_files}</div></div>
-          <div class="stat"><div class="k">vulns</div><div class="v">${r.stats.vulns}</div></div>
+    function hostTable(rows) {
+      if (!rows || !rows.length) return '<div class="muted">No live hosts</div>';
+      return `
+        <table>
+          <thead><tr><th>status</th><th>url</th><th>title</th></tr></thead>
+          <tbody>
+            ${rows.slice(0, 180).map(r => `<tr><td>${r.status_code}</td><td><a href="${r.url}" target="_blank">${r.url}</a></td><td>${(r.title || '').replace(/</g,'&lt;')}</td></tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
+    function vulnTable(rows) {
+      if (!rows || !rows.length) return '<div class="muted">No vulnerability results</div>';
+      return `
+        <table>
+          <thead><tr><th>severity</th><th>template</th><th>matched</th></tr></thead>
+          <tbody>
+            ${rows.slice(0, 180).map(v => `<tr><td class="sev-${v.severity}">${v.severity}</td><td>${v.template || ''}</td><td>${v.matched || ''}</td></tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
+    function textList(rows, empty) {
+      if (!rows || !rows.length) return `<div class="muted">${empty}</div>`;
+      return `<table><tbody>${rows.slice(0, 220).map(x => `<tr><td>${String(x).replace(/</g,'&lt;')}</td></tr>`).join('')}</tbody></table>`;
+    }
+
+    function renderDetail(r) {
+      const s = r.stats || {};
+      const stages = stageData(s);
+      const detail = document.getElementById('detail');
+      detail.innerHTML = `
+        <div class="mono muted">scan ${r.id} | target ${r.target} | mode ${r.mode} | finished ${fmtDate(r.finished_at)} | duration ${r.duration_ms}ms</div>
+
+        <div class="summary">
+          <div class="metric"><div class="k">subdomains</div><div class="v">${s.subdomains || 0}</div></div>
+          <div class="metric"><div class="k">live hosts</div><div class="v">${s.live_hosts || 0}</div></div>
+          <div class="metric"><div class="k">ports</div><div class="v">${s.ports || 0}</div></div>
+          <div class="metric"><div class="k">urls</div><div class="v">${s.urls || 0}</div></div>
+          <div class="metric"><div class="k">js files</div><div class="v">${s.js_files || 0}</div></div>
+          <div class="metric"><div class="k">vulns</div><div class="v">${s.vulns || 0}</div></div>
         </div>
-        <div class="split">
-          <div class="box">
-            <h3>Global Heat Map</h3>
-            <div id="map"></div>
-          </div>
-          <div class="box">
-            <h3>Warnings</h3>
-            ${list(r.warnings || [], x => `<li>${x}</li>`, 'No warnings')}
-          </div>
-          <div class="box">
-            <h3>Live Hosts</h3>
-            ${list(r.live_hosts, x => `<li>${x.status_code} <a href="${x.url}" target="_blank" style="color:#8dd3ff">${x.url}</a></li>`) }
-          </div>
-          <div class="box">
-            <h3>Vulnerabilities</h3>
-            ${list(r.vulns, x => `<li class="sev-${x.severity}">[${x.severity}] ${x.template} ${x.matched || ''}</li>`) }
-          </div>
-          <div class="box">
-            <h3>URLs</h3>
-            ${list(r.urls, x => `<li>${x}</li>`) }
-          </div>
-          <div class="box">
-            <h3>JavaScript</h3>
-            ${list(r.js_files, x => `<li>${x}</li>`) }
-          </div>
+
+        <div class="tabs" id="tabs">
+          <button class="tab active" data-tab="overview">overview</button>
+          <button class="tab" data-tab="assets">assets</button>
+          <button class="tab" data-tab="findings">findings</button>
+          <button class="tab" data-tab="raw">raw</button>
         </div>
+
+        <section id="tab-overview" class="view active">
+          <div class="split">
+            <div class="box">
+              <h3>Global Traffic Footprint</h3>
+              <div id="map"></div>
+            </div>
+            <div class="box">
+              <h3>Stage Yield</h3>
+              <div class="timeline">
+                ${stages.map(x => `<div class="stage"><span>${x.name}</span><span class="bar"><span class="fill" style="width:${x.pct}%"></span></span><span>${x.v}</span></div>`).join('')}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-assets" class="view">
+          <div class="split">
+            <div class="box"><h3>Live Hosts</h3>${hostTable(r.live_hosts)}</div>
+            <div class="box"><h3>Subdomains</h3>${textList(r.subdomains, 'No subdomains')}</div>
+            <div class="box"><h3>URLs</h3>${textList(r.urls, 'No URLs')}</div>
+            <div class="box"><h3>JavaScript Files</h3>${textList(r.js_files, 'No JavaScript files')}</div>
+          </div>
+        </section>
+
+        <section id="tab-findings" class="view">
+          <div class="split">
+            <div class="box"><h3>Vulnerabilities</h3>${vulnTable(r.vulns)}</div>
+            <div class="box"><h3>Warnings</h3>${textList(r.warnings || [], 'No warnings')}</div>
+          </div>
+        </section>
+
+        <section id="tab-raw" class="view">
+          <div class="box">
+            <h3>Raw JSON</h3>
+            <pre class="mono" style="white-space:pre-wrap;font-size:12px;color:#cbe0f2;max-height:520px;overflow:auto">${JSON.stringify(r, null, 2).replace(/</g,'&lt;')}</pre>
+          </div>
+        </section>
       `;
+
+      detail.querySelectorAll('.tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+          detail.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+          detail.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+          btn.classList.add('active');
+          detail.querySelector('#tab-' + btn.dataset.tab).classList.add('active');
+          if (btn.dataset.tab === 'overview') loadHeat();
+        });
+      });
+
       loadHeat();
     }
 
-    function renderScans(items) {
-      const root = document.getElementById('scanList');
-      root.innerHTML = '';
-      items.forEach((s, idx) => {
-        const node = document.createElement('div');
-        node.className = 'scan' + (s.id === activeId ? ' active' : '');
-        node.innerHTML = `<b>${s.target}</b><div class="m">${s.mode} | live ${s.stats.live_hosts} | urls ${s.stats.urls}</div><div class="m">${new Date(s.finished_at).toLocaleString()}</div>`;
-        node.onclick = () => {
-          activeId = s.id;
-          document.querySelectorAll('.scan').forEach(el => el.classList.remove('active'));
-          node.classList.add('active');
-          loadResult(s.id);
-        };
-        root.appendChild(node);
-        if (idx === 0 && !activeId) node.click();
-      });
+    async function loadResult(id) {
+      const res = await fetch('/api/results?id=' + encodeURIComponent(id));
+      if (!res.ok) return;
+      const data = await res.json();
+      renderDetail(data);
     }
 
     async function loadScans() {
       const res = await fetch('/api/scans');
+      if (!res.ok) {
+        document.getElementById('pulse').textContent = 'scan index unavailable';
+        return;
+      }
       scans = await res.json();
-      renderScans(scans);
+      document.getElementById('pulse').textContent = `${scans.length} indexed scans`;
+      renderScanList(scans);
     }
 
     document.getElementById('search').addEventListener('input', (e) => {
       const q = (e.target.value || '').toLowerCase().trim();
-      if (!q) return renderScans(scans);
-      renderScans(scans.filter(s => (s.target || '').toLowerCase().includes(q)));
+      if (!q) return renderScanList(scans);
+      renderScanList(scans.filter(s => (`${s.id} ${s.target} ${s.mode}`).toLowerCase().includes(q)));
     });
 
     loadScans();
