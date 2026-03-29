@@ -29,6 +29,7 @@ env/
 data/
 logs/
 *.log
+storage/
 
 # OS
 .DS_Store
@@ -38,3 +39,8 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Go build artifacts
+macaronv2.exe
+macaron.exe
+bin/

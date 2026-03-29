@@ -49,6 +49,7 @@ func run() int {
 		quiet       bool
 		showVersion bool
 		serveAddr   string
+		storagePath string
 	)
 
 	pflag.StringArrayVarP(&scanTargets, "scan", "s", nil, "Scan target(s)")
@@ -75,6 +76,7 @@ func run() int {
 	pflag.BoolVarP(&quiet, "quiet", "q", false, "Quiet output")
 	pflag.BoolVar(&showVersion, "version", false, "Show version")
 	pflag.StringVar(&serveAddr, "addr", "127.0.0.1:8088", "Dashboard bind address")
+	pflag.StringVar(&storagePath, "storage", "", "Storage root directory (default: ./storage)")
 	pflag.Parse()
 
 	if showVersion {
@@ -82,7 +84,7 @@ func run() int {
 		return 0
 	}
 
-	home, err := macaronHome()
+	home, err := macaronHome(storagePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
@@ -221,14 +223,18 @@ Core flags:
   -R, --results          Show scan details
   -E, --export           Export JSON
   -L, --list-tools       Show tool availability
+      --storage DIR       Use custom storage root (default ./storage)
       --serve            Start browser dashboard
       --version          Show version`)
 }
 
-func macaronHome() (string, error) {
-	home, err := os.UserHomeDir()
+func macaronHome(override string) (string, error) {
+	if strings.TrimSpace(override) != "" {
+		return filepath.Clean(override), nil
+	}
+	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".macaronv2"), nil
+	return filepath.Join(cwd, "storage"), nil
 }

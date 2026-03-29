@@ -118,7 +118,7 @@ func (a *App) Export(path, target string) (string, error) {
 }
 
 func (a *App) ShowConfig() string {
-	return fmt.Sprintf("Home: %s\nScans: %s\n", a.Home, filepath.Join(a.Home, "scans"))
+	return fmt.Sprintf("Storage: %s\nPer-target folders: %s\n", a.Home, filepath.Join(a.Home, "<target>"))
 }
 
 func ParseTargets(raw []string, filePath string, stdin bool) ([]string, error) {

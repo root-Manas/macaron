@@ -15,53 +15,67 @@ import (
 
 type Store struct {
 	baseDir string
-	scans   string
-	latest  string
 }
 
 func New(baseDir string) (*Store, error) {
-	s := &Store{
-		baseDir: baseDir,
-		scans:   filepath.Join(baseDir, "scans"),
-		latest:  filepath.Join(baseDir, "latest"),
-	}
-	for _, dir := range []string{s.baseDir, s.scans, s.latest} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, err
-		}
+	s := &Store{baseDir: baseDir}
+	if err := os.MkdirAll(s.baseDir, 0o755); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
 
 func (s *Store) SaveScan(result model.ScanResult) error {
+	targetDir := filepath.Join(s.baseDir, sanitizeFilename(result.Target))
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return err
+	}
+
 	b, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return err
 	}
-	f := filepath.Join(s.scans, result.ID+".json")
-	if err := os.WriteFile(f, b, 0o644); err != nil {
+
+	scanPath := filepath.Join(targetDir, result.ID+".json")
+	if err := os.WriteFile(scanPath, b, 0o644); err != nil {
 		return err
 	}
-	latestFile := filepath.Join(s.latest, sanitizeFilename(result.Target)+".txt")
-	return os.WriteFile(latestFile, []byte(result.ID), 0o644)
+
+	latestPath := filepath.Join(targetDir, "latest.txt")
+	return os.WriteFile(latestPath, []byte(result.ID), 0o644)
 }
 
 func (s *Store) GetByID(id string) (*model.ScanResult, error) {
-	f := filepath.Join(s.scans, id+".json")
-	b, err := os.ReadFile(f)
-	if err != nil {
-		return nil, err
+	var found string
+	errWalk := filepath.WalkDir(s.baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if filepath.Ext(d.Name()) != ".json" {
+			return nil
+		}
+		if strings.TrimSuffix(d.Name(), ".json") == id {
+			found = path
+			return errors.New("found")
+		}
+		return nil
+	})
+	if errWalk != nil && errWalk.Error() != "found" {
+		return nil, errWalk
 	}
-	var res model.ScanResult
-	if err := json.Unmarshal(b, &res); err != nil {
-		return nil, err
+	if found == "" {
+		return nil, os.ErrNotExist
 	}
-	return &res, nil
+	return readScan(found)
 }
 
 func (s *Store) LatestByTarget(target string) (*model.ScanResult, error) {
-	latestFile := filepath.Join(s.latest, sanitizeFilename(target)+".txt")
-	b, err := os.ReadFile(latestFile)
+	targetDir := filepath.Join(s.baseDir, sanitizeFilename(target))
+	latestPath := filepath.Join(targetDir, "latest.txt")
+	b, err := os.ReadFile(latestPath)
 	if err != nil {
 		return nil, err
 	}
@@ -69,26 +83,21 @@ func (s *Store) LatestByTarget(target string) (*model.ScanResult, error) {
 	if id == "" {
 		return nil, errors.New("empty latest scan entry")
 	}
-	return s.GetByID(id)
+	return readScan(filepath.Join(targetDir, id+".json"))
 }
 
 func (s *Store) Summaries(limit int) ([]model.ScanSummary, error) {
-	entries, err := os.ReadDir(s.scans)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]model.ScanSummary, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(s.scans, e.Name()))
+	out := make([]model.ScanSummary, 0, 64)
+	err := filepath.WalkDir(s.baseDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			continue
+			return nil
 		}
-		var r model.ScanResult
-		if err := json.Unmarshal(b, &r); err != nil {
-			continue
+		if d.IsDir() || filepath.Ext(d.Name()) != ".json" {
+			return nil
+		}
+		r, err := readScan(path)
+		if err != nil {
+			return nil
 		}
 		out = append(out, model.ScanSummary{
 			ID:         r.ID,
@@ -98,7 +107,12 @@ func (s *Store) Summaries(limit int) ([]model.ScanSummary, error) {
 			DurationMS: r.DurationMS,
 			Stats:      r.Stats,
 		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].FinishedAt.After(out[j].FinishedAt)
 	})
@@ -117,6 +131,7 @@ func (s *Store) Export(path string, target string) (string, error) {
 		"exported_at": time.Now().Format(time.RFC3339),
 		"targets":     []model.ScanResult{},
 	}
+
 	results := make([]model.ScanResult, 0, len(summaries))
 	for _, summary := range summaries {
 		if target != "" && !strings.EqualFold(summary.Target, target) {
@@ -129,6 +144,7 @@ func (s *Store) Export(path string, target string) (string, error) {
 		results = append(results, *res)
 	}
 	payload["targets"] = results
+
 	b, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return "", err
@@ -140,6 +156,18 @@ func (s *Store) Export(path string, target string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func readScan(path string) (*model.ScanResult, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var res model.ScanResult
+	if err := json.Unmarshal(b, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
 func sanitizeFilename(s string) string {
