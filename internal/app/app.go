@@ -10,9 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/root-Manas/macaron/internal/engine"
 	"github.com/root-Manas/macaron/internal/model"
 	"github.com/root-Manas/macaron/internal/store"
@@ -27,11 +29,13 @@ type App struct {
 }
 
 type ScanArgs struct {
-	Targets []string
-	Mode    model.Mode
-	Rate    int
-	Threads int
-	Quiet   bool
+	Targets       []string
+	Mode          model.Mode
+	Rate          int
+	Threads       int
+	Quiet         bool
+	EnabledStages map[string]bool
+	APIKeys       map[string]string
 }
 
 func New(home string) (*App, error) {
@@ -49,10 +53,12 @@ func (a *App) Scan(ctx context.Context, args ScanArgs) ([]model.ScanResult, erro
 	results := make([]model.ScanResult, 0, len(args.Targets))
 	for _, t := range args.Targets {
 		res, err := a.Engine.ScanTarget(ctx, t, engine.Options{
-			Mode:    args.Mode,
-			Rate:    args.Rate,
-			Threads: args.Threads,
-			Quiet:   args.Quiet,
+			Mode:          args.Mode,
+			Rate:          args.Rate,
+			Threads:       args.Threads,
+			Quiet:         args.Quiet,
+			EnabledStages: args.EnabledStages,
+			APIKeys:       args.APIKeys,
 		})
 		if err != nil {
 			return nil, err
@@ -75,18 +81,21 @@ func (a *App) ShowStatus(limit int) (string, error) {
 	}
 	b := strings.Builder{}
 	b.WriteString("macaronV2 status\n")
-	b.WriteString("ID\tTARGET\tMODE\tLIVE\tURLS\tVULNS\tFINISHED\n")
+	tw := table.NewWriter()
+	tw.AppendHeader(table.Row{"ID", "TARGET", "MODE", "LIVE", "URLS", "VULNS", "FINISHED"})
 	for _, s := range summaries {
-		b.WriteString(fmt.Sprintf("%s\t%s\t%s\t%d\t%d\t%d\t%s\n",
+		tw.AppendRow(table.Row{
 			s.ID,
 			s.Target,
 			s.Mode,
-			s.Stats.LiveHosts,
-			s.Stats.URLs,
-			s.Stats.Vulns,
+			strconv.Itoa(s.Stats.LiveHosts),
+			strconv.Itoa(s.Stats.URLs),
+			strconv.Itoa(s.Stats.Vulns),
 			s.FinishedAt.Format(time.RFC3339),
-		))
+		})
 	}
+	b.WriteString(tw.Render())
+	b.WriteString("\n")
 	return b.String(), nil
 }
 
@@ -118,7 +127,13 @@ func (a *App) Export(path, target string) (string, error) {
 }
 
 func (a *App) ShowConfig() string {
-	return fmt.Sprintf("Storage: %s\nPer-target folders: %s\n", a.Home, filepath.Join(a.Home, "<target>"))
+	return fmt.Sprintf(
+		"Storage: %s\nDB: %s\nConfig: %s\nPer-target folders: %s\n",
+		a.Home,
+		filepath.Join(a.Home, "macaron.db"),
+		filepath.Join(a.Home, "config.yaml"),
+		filepath.Join(a.Home, "<target>"),
+	)
 }
 
 func ParseTargets(raw []string, filePath string, stdin bool) ([]string, error) {
@@ -262,4 +277,24 @@ func firstNVulns(items []model.Vulnerability, n int) []model.Vulnerability {
 		return items
 	}
 	return items[:n]
+}
+
+func ParseStages(raw string) map[string]bool {
+	all := []string{"subdomains", "http", "ports", "urls", "vulns"}
+	if strings.TrimSpace(raw) == "" || strings.EqualFold(strings.TrimSpace(raw), "all") {
+		m := make(map[string]bool, len(all))
+		for _, s := range all {
+			m[s] = true
+		}
+		return m
+	}
+	out := make(map[string]bool, len(all))
+	for _, s := range strings.Split(raw, ",") {
+		v := strings.ToLower(strings.TrimSpace(s))
+		if v == "" {
+			continue
+		}
+		out[v] = true
+	}
+	return out
 }

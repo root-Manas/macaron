@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/root-Manas/macaron/internal/app"
+	"github.com/root-Manas/macaron/internal/cfg"
 	"github.com/root-Manas/macaron/internal/model"
 	"github.com/root-Manas/macaron/internal/ui"
 	"github.com/spf13/pflag"
@@ -31,7 +32,7 @@ func run() int {
 		results     bool
 		listTools   bool
 		export      bool
-		config      bool
+		configCmd   bool
 		pipeline    bool
 		serve       bool
 		filePath    string
@@ -50,6 +51,9 @@ func run() int {
 		showVersion bool
 		serveAddr   string
 		storagePath string
+		stages      string
+		setAPI      []string
+		showAPI     bool
 	)
 
 	pflag.StringArrayVarP(&scanTargets, "scan", "s", nil, "Scan target(s)")
@@ -57,7 +61,7 @@ func run() int {
 	pflag.BoolVarP(&results, "results", "R", false, "Show results")
 	pflag.BoolVarP(&listTools, "list-tools", "L", false, "List external tool availability")
 	pflag.BoolVarP(&export, "export", "E", false, "Export results to JSON")
-	pflag.BoolVarP(&config, "config", "C", false, "Show config paths")
+	pflag.BoolVarP(&configCmd, "config", "C", false, "Show config paths")
 	pflag.BoolVarP(&pipeline, "pipeline", "P", false, "Show pipeline path (v2 native pipeline is built-in)")
 	pflag.BoolVar(&serve, "serve", false, "Start web dashboard server")
 
@@ -77,6 +81,9 @@ func run() int {
 	pflag.BoolVar(&showVersion, "version", false, "Show version")
 	pflag.StringVar(&serveAddr, "addr", "127.0.0.1:8088", "Dashboard bind address")
 	pflag.StringVar(&storagePath, "storage", "", "Storage root directory (default: ./storage)")
+	pflag.StringVar(&stages, "stages", "all", "Comma-separated stages: subdomains,http,ports,urls,vulns")
+	pflag.StringArrayVar(&setAPI, "set-api", nil, "Set API key as name=value (repeatable). Use empty value to unset.")
+	pflag.BoolVar(&showAPI, "show-api", false, "Show configured API keys (masked)")
 	pflag.Parse()
 
 	if showVersion {
@@ -94,8 +101,34 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
+	config, err := cfg.Load(home)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		return 1
+	}
+	if len(setAPI) > 0 {
+		cfg.ApplySetAPI(config, setAPI)
+		if err := cfg.Save(home, config); err != nil {
+			fmt.Fprintf(os.Stderr, "error saving config: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Saved API keys to %s\n", filepath.Join(home, "config.yaml"))
+		return 0
+	}
+	if showAPI {
+		items := cfg.MaskedKeys(config)
+		if len(items) == 0 {
+			fmt.Println("No API keys configured")
+			return 0
+		}
+		fmt.Println("Configured API keys:")
+		for _, item := range items {
+			fmt.Printf("  - %s\n", item)
+		}
+		return 0
+	}
 
-	if config {
+	if configCmd {
 		fmt.Print(application.ShowConfig())
 		return 0
 	}
@@ -179,11 +212,13 @@ func run() int {
 	start := time.Now()
 	modeVal := model.Mode(strings.ToLower(mode))
 	res, err := application.Scan(ctx, app.ScanArgs{
-		Targets: targets,
-		Mode:    modeVal,
-		Rate:    rate,
-		Threads: threads,
-		Quiet:   quiet,
+		Targets:       targets,
+		Mode:          modeVal,
+		Rate:          rate,
+		Threads:       threads,
+		Quiet:         quiet,
+		EnabledStages: app.ParseStages(stages),
+		APIKeys:       config.APIKeys,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "scan failed: %v\n", err)
@@ -224,6 +259,9 @@ Core flags:
   -E, --export           Export JSON
   -L, --list-tools       Show tool availability
       --storage DIR       Use custom storage root (default ./storage)
+      --stages LIST       Choose stages: subdomains,http,ports,urls,vulns
+      --set-api k=v       Save API keys to storage config.yaml
+      --show-api          Show masked API keys
       --serve            Start browser dashboard
       --version          Show version`)
 }

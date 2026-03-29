@@ -24,10 +24,12 @@ import (
 )
 
 type Options struct {
-	Mode    model.Mode
-	Rate    int
-	Threads int
-	Quiet   bool
+	Mode          model.Mode
+	Rate          int
+	Threads       int
+	Quiet         bool
+	EnabledStages map[string]bool
+	APIKeys       map[string]string
 }
 
 type Engine struct {
@@ -62,27 +64,40 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 
 	subs := map[string]struct{}{result.Target: {}}
 
-	nativeSubs, warn := e.crtshSubdomains(ctx, result.Target)
-	if warn != "" {
-		result.Warnings = append(result.Warnings, warn)
-	}
-	for _, s := range nativeSubs {
-		if looksLikeHost(s) {
-			subs[s] = struct{}{}
+	if stageOn(opts.EnabledStages, "subdomains") {
+		nativeSubs, warn := e.crtshSubdomains(ctx, result.Target)
+		if warn != "" {
+			result.Warnings = append(result.Warnings, warn)
 		}
-	}
-
-	for _, tool := range []string{"subfinder", "assetfinder", "findomain"} {
-		lines, err := runSubdomainTool(ctx, tool, result.Target, opts.Threads)
-		if err != nil {
-			continue
-		}
-		for _, line := range lines {
-			s := normalizeTarget(line)
-			if s != "" && strings.Contains(s, result.Target) && looksLikeHost(s) {
+		for _, s := range nativeSubs {
+			if looksLikeHost(s) {
 				subs[s] = struct{}{}
 			}
 		}
+
+		for _, tool := range []string{"subfinder", "assetfinder", "findomain"} {
+			lines, err := runSubdomainTool(ctx, tool, result.Target, opts.Threads)
+			if err != nil {
+				continue
+			}
+			for _, line := range lines {
+				s := normalizeTarget(line)
+				if s != "" && strings.Contains(s, result.Target) && looksLikeHost(s) {
+					subs[s] = struct{}{}
+				}
+			}
+		}
+
+		if stKey := strings.TrimSpace(opts.APIKeys["securitytrails"]); stKey != "" {
+			stSubs := e.securityTrailsSubdomains(ctx, result.Target, stKey)
+			for _, s := range stSubs {
+				if looksLikeHost(s) {
+					subs[s] = struct{}{}
+				}
+			}
+		}
+	} else {
+		result.Warnings = append(result.Warnings, "subdomain stage disabled by --stages")
 	}
 
 	result.Subdomains = mapKeys(subs)
@@ -92,23 +107,40 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 		probeInputs = []string{result.Target}
 	}
 
-	live := e.probeHTTP(ctx, probeInputs, opts.Threads)
-	result.LiveHosts = live
+	live := make([]model.LiveHost, 0)
+	if stageOn(opts.EnabledStages, "http") {
+		live = e.probeHTTP(ctx, probeInputs, opts.Threads)
+		result.LiveHosts = live
+	} else {
+		result.Warnings = append(result.Warnings, "http stage disabled by --stages")
+	}
 
-	ports := scanCommonPorts(probeInputs, opts.Threads)
-	result.Ports = ports
+	if stageOn(opts.EnabledStages, "ports") {
+		ports := scanCommonPorts(probeInputs, opts.Threads)
+		result.Ports = ports
+	} else {
+		result.Warnings = append(result.Warnings, "port stage disabled by --stages")
+	}
 
-	urls := e.discoverURLs(ctx, probeInputs, opts.Threads)
-	result.URLs = urls
-	result.JSFiles = extractJS(urls)
+	if stageOn(opts.EnabledStages, "urls") {
+		urls := e.discoverURLs(ctx, probeInputs, opts.Threads)
+		result.URLs = urls
+		result.JSFiles = extractJS(urls)
+	} else {
+		result.Warnings = append(result.Warnings, "url discovery stage disabled by --stages")
+	}
 
-	if hasBinary("nuclei") {
-		vulns, err := runNuclei(ctx, live)
-		if err == nil {
-			result.Vulns = vulns
+	if stageOn(opts.EnabledStages, "vulns") {
+		if hasBinary("nuclei") {
+			vulns, err := runNuclei(ctx, live)
+			if err == nil {
+				result.Vulns = vulns
+			}
+		} else {
+			result.Warnings = append(result.Warnings, "nuclei not installed: vulnerability stage skipped")
 		}
 	} else {
-		result.Warnings = append(result.Warnings, "nuclei not installed: vulnerability stage skipped")
+		result.Warnings = append(result.Warnings, "vulnerability stage disabled by --stages")
 	}
 
 	result.Stats = model.ScanStats{
@@ -271,6 +303,37 @@ func (e *Engine) crtshSubdomains(ctx context.Context, target string) ([]string, 
 		}
 	}
 	return dedupe(items), ""
+}
+
+func (e *Engine) securityTrailsSubdomains(ctx context.Context, target string, apiKey string) []string {
+	u := fmt.Sprintf("https://api.securitytrails.com/v1/domain/%s/subdomains", url.PathEscape(target))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("APIKEY", apiKey)
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil
+	}
+	var payload struct {
+		Subdomains []string `json:"subdomains"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&payload); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(payload.Subdomains))
+	for _, sub := range payload.Subdomains {
+		host := strings.TrimSpace(sub + "." + target)
+		if looksLikeHost(host) {
+			out = append(out, strings.ToLower(host))
+		}
+	}
+	return dedupe(out)
 }
 
 func (e *Engine) probeHTTP(ctx context.Context, hosts []string, threads int) []model.LiveHost {
@@ -470,6 +533,17 @@ func looksLikeHost(host string) bool {
 		return false
 	}
 	return strings.Contains(host, ".")
+}
+
+func stageOn(enabled map[string]bool, stage string) bool {
+	if len(enabled) == 0 {
+		return true
+	}
+	v, ok := enabled[strings.ToLower(strings.TrimSpace(stage))]
+	if !ok {
+		return false
+	}
+	return v
 }
 
 func runNuclei(ctx context.Context, hosts []model.LiveHost) ([]model.Vulnerability, error) {

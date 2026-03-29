@@ -33,3 +33,14 @@ func TestParseTargets(t *testing.T) {
 		t.Fatalf("expected 3 unique targets, got %d: %#v", len(out), out)
 	}
 }
+
+func TestParseStages(t *testing.T) {
+	all := ParseStages("all")
+	if !all["subdomains"] || !all["http"] || !all["ports"] || !all["urls"] || !all["vulns"] {
+		t.Fatalf("expected all stages enabled, got %#v", all)
+	}
+	custom := ParseStages("subdomains,http")
+	if !custom["subdomains"] || !custom["http"] || custom["vulns"] {
+		t.Fatalf("unexpected stage parsing result: %#v", custom)
+	}
+}
