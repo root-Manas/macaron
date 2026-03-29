@@ -26,34 +26,38 @@ func main() {
 }
 
 func run() int {
+	normalizeLegacyArgs()
+
 	var (
-		scanTargets []string
-		status      bool
-		results     bool
-		listTools   bool
-		export      bool
-		configCmd   bool
-		pipeline    bool
-		serve       bool
-		filePath    string
-		useStdin    bool
-		domain      string
-		scanID      string
-		what        string
-		mode        string
-		fast        bool
-		narrow      bool
-		rate        int
-		threads     int
-		limit       int
-		output      string
-		quiet       bool
-		showVersion bool
-		serveAddr   string
-		storagePath string
-		stages      string
-		setAPI      []string
-		showAPI     bool
+		scanTargets  []string
+		status       bool
+		results      bool
+		listTools    bool
+		export       bool
+		configCmd    bool
+		pipeline     bool
+		serve        bool
+		filePath     string
+		useStdin     bool
+		domain       string
+		scanID       string
+		what         string
+		mode         string
+		fast         bool
+		narrow       bool
+		rate         int
+		threads      int
+		limit        int
+		output       string
+		quiet        bool
+		showVersion  bool
+		serveAddr    string
+		storagePath  string
+		stages       string
+		setAPI       []string
+		showAPI      bool
+		setup        bool
+		installTools bool
 	)
 
 	pflag.StringArrayVarP(&scanTargets, "scan", "s", nil, "Scan target(s)")
@@ -84,6 +88,8 @@ func run() int {
 	pflag.StringVar(&stages, "stages", "all", "Comma-separated stages: subdomains,http,ports,urls,vulns")
 	pflag.StringArrayVar(&setAPI, "set-api", nil, "Set API key as name=value (repeatable). Use empty value to unset.")
 	pflag.BoolVar(&showAPI, "show-api", false, "Show configured API keys (masked)")
+	pflag.BoolVar(&setup, "setup", false, "Show setup screen with tool installation status")
+	pflag.BoolVar(&installTools, "install-tools", false, "Install missing supported tools (Linux)")
 	pflag.Parse()
 
 	if showVersion {
@@ -124,6 +130,26 @@ func run() int {
 		fmt.Println("Configured API keys:")
 		for _, item := range items {
 			fmt.Printf("  - %s\n", item)
+		}
+		return 0
+	}
+	if setup || installTools {
+		tools := app.SetupCatalog()
+		fmt.Print(app.RenderSetup(tools))
+		if installTools {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			defer cancel()
+			installed, err := app.InstallMissingTools(ctx, tools)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "setup error: %v\n", err)
+				return 1
+			}
+			if len(installed) == 0 {
+				fmt.Println("No installable missing tools found.")
+			} else {
+				fmt.Printf("Installed: %s\n", strings.Join(installed, ", "))
+			}
+			fmt.Print(app.RenderSetup(app.SetupCatalog()))
 		}
 		return 0
 	}
@@ -225,16 +251,8 @@ func run() int {
 		return 1
 	}
 	if !quiet {
-		for _, r := range res {
-			fmt.Printf("%s: subdomains=%d live=%d urls=%d vulns=%d (%dms)\n",
-				r.Target,
-				r.Stats.Subdomains,
-				r.Stats.LiveHosts,
-				r.Stats.URLs,
-				r.Stats.Vulns,
-				r.DurationMS,
-			)
-		}
+		fmt.Println("macaronV2 scan summary")
+		fmt.Println(app.RenderScanSummary(res))
 		fmt.Printf("Completed %d target(s) in %s\n", len(res), time.Since(start).Round(time.Millisecond))
 	}
 	return 0
@@ -262,8 +280,21 @@ Core flags:
       --stages LIST       Choose stages: subdomains,http,ports,urls,vulns
       --set-api k=v       Save API keys to storage config.yaml
       --show-api          Show masked API keys
+      --setup             Show setup screen with tool status
+      --install-tools     Install missing supported tools (Linux)
       --serve            Start browser dashboard
       --version          Show version`)
+}
+
+func normalizeLegacyArgs() {
+	for i, arg := range os.Args {
+		if arg == "-setup" {
+			os.Args[i] = "--setup"
+		}
+		if arg == "-install-tools" {
+			os.Args[i] = "--install-tools"
+		}
+	}
 }
 
 func macaronHome(override string) (string, error) {

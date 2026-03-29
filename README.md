@@ -68,6 +68,18 @@ macaron -F targets.txt
 macaron -s example.com --stages subdomains,http,urls
 ```
 
+### Setup tools (new)
+
+```bash
+# View installed/missing toolchain
+macaron --setup
+# also works:
+macaron -setup
+
+# Install missing supported tools (Linux)
+macaron --install-tools
+```
+
 ### Results and export
 
 ```bash
@@ -132,6 +144,8 @@ CONFIG:
 
 OTHER:
   -L, --list-tools          Show optional tool availability
+  --setup                   Setup view with tool status
+  --install-tools           Install missing supported tools (Linux)
   -C, --config              Show storage paths
   --version                 Show version
 ```

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,15 @@ import (
 )
 
 var toolNames = []string{"subfinder", "assetfinder", "findomain", "nuclei"}
+
+type SetupTool struct {
+	Name          string
+	Binary        string
+	Required      bool
+	Installed     bool
+	InstallMethod string
+	InstallCmd    string
+}
 
 type App struct {
 	Store  *store.Store
@@ -221,6 +231,83 @@ func ListTools() []model.ToolStatus {
 		items = append(items, model.ToolStatus{Name: t, Installed: err == nil})
 	}
 	return items
+}
+
+func SetupCatalog() []SetupTool {
+	tools := []SetupTool{
+		{Name: "subfinder", Binary: "subfinder", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"},
+		{Name: "assetfinder", Binary: "assetfinder", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/tomnomnom/assetfinder@latest"},
+		{Name: "findomain", Binary: "findomain", Required: false, InstallMethod: "manual", InstallCmd: "apt install findomain OR download release binary"},
+		{Name: "nuclei", Binary: "nuclei", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"},
+		{Name: "httpx", Binary: "httpx", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/httpx/cmd/httpx@latest"},
+		{Name: "dnsx", Binary: "dnsx", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest"},
+		{Name: "naabu", Binary: "naabu", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"},
+		{Name: "gau", Binary: "gau", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/lc/gau/v2/cmd/gau@latest"},
+		{Name: "waybackurls", Binary: "waybackurls", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/tomnomnom/waybackurls@latest"},
+		{Name: "katana", Binary: "katana", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/katana/cmd/katana@latest"},
+	}
+	for i := range tools {
+		_, err := execLookPath(tools[i].Binary)
+		tools[i].Installed = err == nil
+	}
+	return tools
+}
+
+func RenderSetup(tools []SetupTool) string {
+	tw := table.NewWriter()
+	tw.AppendHeader(table.Row{"TOOL", "REQUIRED", "STATUS", "INSTALL"})
+	for _, t := range tools {
+		required := "no"
+		if t.Required {
+			required = "yes"
+		}
+		status := "missing"
+		if t.Installed {
+			status = "installed"
+		}
+		tw.AppendRow(table.Row{t.Name, required, status, t.InstallCmd})
+	}
+	b := strings.Builder{}
+	b.WriteString("macaron setup\n")
+	b.WriteString(tw.Render())
+	b.WriteString("\n")
+	return b.String()
+}
+
+func InstallMissingTools(ctx context.Context, tools []SetupTool) ([]string, error) {
+	if runtime.GOOS != "linux" {
+		return nil, errors.New("auto-install is currently supported on Linux only")
+	}
+	installed := make([]string, 0, 8)
+	for _, t := range tools {
+		if t.Installed || t.InstallMethod != "go" {
+			continue
+		}
+		cmd := exec.CommandContext(ctx, "sh", "-lc", t.InstallCmd)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return installed, fmt.Errorf("%s install failed: %v (%s)", t.Name, err, strings.TrimSpace(string(out)))
+		}
+		installed = append(installed, t.Name)
+	}
+	return installed, nil
+}
+
+func RenderScanSummary(results []model.ScanResult) string {
+	tw := table.NewWriter()
+	tw.AppendHeader(table.Row{"TARGET", "MODE", "SUBDOMAINS", "LIVE", "URLS", "VULNS", "DURATION"})
+	for _, r := range results {
+		tw.AppendRow(table.Row{
+			r.Target,
+			r.Mode,
+			r.Stats.Subdomains,
+			r.Stats.LiveHosts,
+			r.Stats.URLs,
+			r.Stats.Vulns,
+			fmt.Sprintf("%dms", r.DurationMS),
+		})
+	}
+	return tw.Render()
 }
 
 func execLookPath(name string) (string, error) {
