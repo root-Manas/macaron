@@ -14,6 +14,7 @@ import (
 
 	"github.com/root-Manas/macaron/internal/app"
 	"github.com/root-Manas/macaron/internal/cfg"
+	"github.com/root-Manas/macaron/internal/cliui"
 	"github.com/root-Manas/macaron/internal/model"
 	"github.com/root-Manas/macaron/internal/ui"
 	"github.com/spf13/pflag"
@@ -248,6 +249,11 @@ func run() int {
 
 	start := time.Now()
 	modeVal := model.Mode(strings.ToLower(mode))
+	var renderer *cliui.LiveRenderer
+	if !quiet {
+		renderer = cliui.NewLiveRenderer(os.Stdout)
+		defer renderer.Close()
+	}
 	if !quiet {
 		fmt.Printf("Workflow profile: %s | mode=%s | stages=%s | rate=%d | threads=%d\n", profile, mode, stages, rate, threads)
 	}
@@ -259,6 +265,11 @@ func run() int {
 		Quiet:         quiet,
 		EnabledStages: app.ParseStages(stages),
 		APIKeys:       config.APIKeys,
+		Progress: func(ev model.StageEvent) {
+			if renderer != nil {
+				renderer.Handle(ev)
+			}
+		},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "scan failed: %v\n", err)

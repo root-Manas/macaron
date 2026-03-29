@@ -46,6 +46,7 @@ type ScanArgs struct {
 	Quiet         bool
 	EnabledStages map[string]bool
 	APIKeys       map[string]string
+	Progress      func(model.StageEvent)
 }
 
 func New(home string) (*App, error) {
@@ -69,6 +70,7 @@ func (a *App) Scan(ctx context.Context, args ScanArgs) ([]model.ScanResult, erro
 			Quiet:         args.Quiet,
 			EnabledStages: args.EnabledStages,
 			APIKeys:       args.APIKeys,
+			Progress:      args.Progress,
 		})
 		if err != nil {
 			return nil, err

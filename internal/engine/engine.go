@@ -30,6 +30,7 @@ type Options struct {
 	Quiet         bool
 	EnabledStages map[string]bool
 	APIKeys       map[string]string
+	Progress      func(model.StageEvent)
 }
 
 type Engine struct {
@@ -55,6 +56,12 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 		Mode:      normalizeMode(opts.Mode),
 		StartedAt: start,
 	}
+	emit(opts.Progress, model.StageEvent{
+		Timestamp: start,
+		Type:      model.EventTargetStart,
+		Target:    result.Target,
+		Message:   "scan started",
+	})
 	if opts.Threads <= 0 {
 		opts.Threads = 30
 	}
@@ -65,9 +72,12 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 	subs := map[string]struct{}{result.Target: {}}
 
 	if stageOn(opts.EnabledStages, "subdomains") {
+		stageStart := time.Now()
+		emit(opts.Progress, model.StageEvent{Timestamp: stageStart, Type: model.EventStageStart, Target: result.Target, Stage: "subdomains", Message: "collecting subdomains"})
 		nativeSubs, warn := e.crtshSubdomains(ctx, result.Target)
 		if warn != "" {
 			result.Warnings = append(result.Warnings, warn)
+			emit(opts.Progress, model.StageEvent{Timestamp: time.Now(), Type: model.EventWarn, Target: result.Target, Stage: "subdomains", Message: warn})
 		}
 		for _, s := range nativeSubs {
 			if looksLikeHost(s) {
@@ -96,8 +106,17 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 				}
 			}
 		}
+		emit(opts.Progress, model.StageEvent{
+			Timestamp:  time.Now(),
+			Type:       model.EventStageDone,
+			Target:     result.Target,
+			Stage:      "subdomains",
+			Count:      len(subs),
+			DurationMS: time.Since(stageStart).Milliseconds(),
+		})
 	} else {
 		result.Warnings = append(result.Warnings, "subdomain stage disabled by --stages")
+		emit(opts.Progress, model.StageEvent{Timestamp: time.Now(), Type: model.EventWarn, Target: result.Target, Stage: "subdomains", Message: "stage disabled"})
 	}
 
 	result.Subdomains = mapKeys(subs)
@@ -109,28 +128,63 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 
 	live := make([]model.LiveHost, 0)
 	if stageOn(opts.EnabledStages, "http") {
+		stageStart := time.Now()
+		emit(opts.Progress, model.StageEvent{Timestamp: stageStart, Type: model.EventStageStart, Target: result.Target, Stage: "http", Message: "probing live hosts"})
 		live = e.probeHTTP(ctx, probeInputs, opts.Threads)
 		result.LiveHosts = live
+		emit(opts.Progress, model.StageEvent{
+			Timestamp:  time.Now(),
+			Type:       model.EventStageDone,
+			Target:     result.Target,
+			Stage:      "http",
+			Count:      len(result.LiveHosts),
+			DurationMS: time.Since(stageStart).Milliseconds(),
+		})
 	} else {
 		result.Warnings = append(result.Warnings, "http stage disabled by --stages")
+		emit(opts.Progress, model.StageEvent{Timestamp: time.Now(), Type: model.EventWarn, Target: result.Target, Stage: "http", Message: "stage disabled"})
 	}
 
 	if stageOn(opts.EnabledStages, "ports") {
+		stageStart := time.Now()
+		emit(opts.Progress, model.StageEvent{Timestamp: stageStart, Type: model.EventStageStart, Target: result.Target, Stage: "ports", Message: "scanning common ports"})
 		ports := scanCommonPorts(probeInputs, opts.Threads)
 		result.Ports = ports
+		emit(opts.Progress, model.StageEvent{
+			Timestamp:  time.Now(),
+			Type:       model.EventStageDone,
+			Target:     result.Target,
+			Stage:      "ports",
+			Count:      len(result.Ports),
+			DurationMS: time.Since(stageStart).Milliseconds(),
+		})
 	} else {
 		result.Warnings = append(result.Warnings, "port stage disabled by --stages")
+		emit(opts.Progress, model.StageEvent{Timestamp: time.Now(), Type: model.EventWarn, Target: result.Target, Stage: "ports", Message: "stage disabled"})
 	}
 
 	if stageOn(opts.EnabledStages, "urls") {
+		stageStart := time.Now()
+		emit(opts.Progress, model.StageEvent{Timestamp: stageStart, Type: model.EventStageStart, Target: result.Target, Stage: "urls", Message: "discovering URLs"})
 		urls := e.discoverURLs(ctx, probeInputs, opts.Threads)
 		result.URLs = urls
 		result.JSFiles = extractJS(urls)
+		emit(opts.Progress, model.StageEvent{
+			Timestamp:  time.Now(),
+			Type:       model.EventStageDone,
+			Target:     result.Target,
+			Stage:      "urls",
+			Count:      len(result.URLs),
+			DurationMS: time.Since(stageStart).Milliseconds(),
+		})
 	} else {
 		result.Warnings = append(result.Warnings, "url discovery stage disabled by --stages")
+		emit(opts.Progress, model.StageEvent{Timestamp: time.Now(), Type: model.EventWarn, Target: result.Target, Stage: "urls", Message: "stage disabled"})
 	}
 
 	if stageOn(opts.EnabledStages, "vulns") {
+		stageStart := time.Now()
+		emit(opts.Progress, model.StageEvent{Timestamp: stageStart, Type: model.EventStageStart, Target: result.Target, Stage: "vulns", Message: "running vulnerability checks"})
 		if hasBinary("nuclei") {
 			vulns, err := runNuclei(ctx, live)
 			if err == nil {
@@ -138,9 +192,19 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 			}
 		} else {
 			result.Warnings = append(result.Warnings, "nuclei not installed: vulnerability stage skipped")
+			emit(opts.Progress, model.StageEvent{Timestamp: time.Now(), Type: model.EventWarn, Target: result.Target, Stage: "vulns", Message: "nuclei missing; skipped"})
 		}
+		emit(opts.Progress, model.StageEvent{
+			Timestamp:  time.Now(),
+			Type:       model.EventStageDone,
+			Target:     result.Target,
+			Stage:      "vulns",
+			Count:      len(result.Vulns),
+			DurationMS: time.Since(stageStart).Milliseconds(),
+		})
 	} else {
 		result.Warnings = append(result.Warnings, "vulnerability stage disabled by --stages")
+		emit(opts.Progress, model.StageEvent{Timestamp: time.Now(), Type: model.EventWarn, Target: result.Target, Stage: "vulns", Message: "stage disabled"})
 	}
 
 	result.Stats = model.ScanStats{
@@ -153,7 +217,20 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 	}
 	result.FinishedAt = time.Now()
 	result.DurationMS = result.FinishedAt.Sub(start).Milliseconds()
+	emit(opts.Progress, model.StageEvent{
+		Timestamp:  result.FinishedAt,
+		Type:       model.EventTargetDone,
+		Target:     result.Target,
+		Message:    "scan completed",
+		DurationMS: result.DurationMS,
+	})
 	return result, nil
+}
+
+func emit(cb func(model.StageEvent), ev model.StageEvent) {
+	if cb != nil {
+		cb(ev)
+	}
 }
 
 func normalizeMode(m model.Mode) model.Mode {
