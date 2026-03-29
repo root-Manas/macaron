@@ -89,6 +89,25 @@
       font-family: "IBM Plex Mono", monospace;
       margin-bottom: 10px;
     }
+    .filters {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .chip {
+      border: 1px solid var(--line);
+      background: #0b1723;
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-family: "IBM Plex Mono", monospace;
+      cursor: pointer;
+      transition: all .15s ease;
+    }
+    .chip:hover { border-color: var(--accent); color: var(--accent); }
+    .chip.active { border-color: var(--accent); color: var(--accent); background: #0f2333; }
     .scan-list { overflow: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 3px; }
     .scan {
       border: 1px solid var(--line);
@@ -191,6 +210,59 @@
       gap: 8px;
       font-size: 12px;
     }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .badge {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #0b1825;
+      padding: 8px;
+      font-size: 12px;
+      font-family: "IBM Plex Mono", monospace;
+      color: var(--muted);
+    }
+    .badge b { color: var(--ink); }
+    .trend {
+      display: grid;
+      gap: 8px;
+    }
+    .trend-item {
+      display: grid;
+      grid-template-columns: 120px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      font-family: "IBM Plex Mono", monospace;
+    }
+    .spark {
+      height: 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #07121b;
+      overflow: hidden;
+    }
+    .spark-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #59b7ff, #4dfbc6);
+      transform-origin: left;
+      animation: grow .45s ease;
+    }
+    @keyframes grow {
+      from { transform: scaleX(.1); opacity: .5; }
+      to { transform: scaleX(1); opacity: 1; }
+    }
+    .fade-in {
+      animation: fade .25s ease;
+    }
+    @keyframes fade {
+      from { opacity: 0; transform: translateY(2px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
     .btn {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -208,6 +280,7 @@
       .left { max-height: 300px; }
       .summary { grid-template-columns: repeat(3, minmax(0,1fr)); }
       .split { grid-template-columns: 1fr; }
+      .status-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -226,6 +299,14 @@
 
     <aside class="panel left">
       <input id="search" class="search" placeholder="search target / mode / id" />
+      <div class="filters" id="filters">
+        <button class="chip active" data-mode="all">all</button>
+        <button class="chip" data-mode="wide">wide</button>
+        <button class="chip" data-mode="fast">fast</button>
+        <button class="chip" data-mode="narrow">narrow</button>
+        <button class="chip" data-mode="deep">deep</button>
+        <button class="chip" data-mode="osint">osint</button>
+      </div>
       <div id="scanList" class="scan-list"></div>
     </aside>
 
@@ -240,6 +321,8 @@
     let map = null;
     let mapMarkers = [];
     const refreshMS = 15000;
+    let modeFilter = 'all';
+    let filteredScans = [];
 
     function fmtDate(raw) {
       if (!raw) return '-';
@@ -284,7 +367,7 @@
 
     function scanCard(s) {
       return `
-        <div class="scan ${s.id === activeId ? 'active' : ''}" data-id="${s.id}">
+        <div class="scan fade-in ${s.id === activeId ? 'active' : ''}" data-id="${s.id}">
           <div class="name">${s.target}</div>
           <div class="meta">${s.mode} | live ${s.stats.live_hosts} | urls ${s.stats.urls}</div>
           <div class="meta">${fmtDate(s.finished_at)}</div>
@@ -294,6 +377,10 @@
 
     function renderScanList(items) {
       const root = document.getElementById('scanList');
+      if (!items.length) {
+        root.innerHTML = `<div class="muted mono">No scans match current filters.</div>`;
+        return;
+      }
       root.innerHTML = items.map(scanCard).join('');
       root.querySelectorAll('.scan').forEach(node => {
         node.addEventListener('click', () => {
@@ -345,6 +432,16 @@
       return `<table><tbody>${rows.slice(0, 220).map(x => `<tr><td>${String(x).replace(/</g,'&lt;')}</td></tr>`).join('')}</tbody></table>`;
     }
 
+    function trendRows(currentId) {
+      const recent = scans.slice(0, 12);
+      const max = Math.max(...recent.map(s => s.stats.urls || 0), 1);
+      return recent.map(s => {
+        const width = Math.max(4, Math.round(((s.stats.urls || 0) / max) * 100));
+        const marker = s.id === currentId ? ' <b>(selected)</b>' : '';
+        return `<div class="trend-item"><span>${s.target}</span><span class="spark"><span class="spark-fill" style="width:${width}%"></span></span><span>${s.stats.urls || 0}${marker}</span></div>`;
+      }).join('');
+    }
+
     function renderDetail(r) {
       const s = r.stats || {};
       const stages = stageData(s);
@@ -353,6 +450,11 @@
         <div class="status-strip mono">
           <span>viewing: ${r.target} (${r.id})</span>
           <button class="btn" id="refreshNow">refresh now</button>
+        </div>
+        <div class="status-grid">
+          <div class="badge">Last Finished: <b>${fmtDate(r.finished_at)}</b></div>
+          <div class="badge">Duration: <b>${r.duration_ms || 0}ms</b></div>
+          <div class="badge">Health: <b>${(r.warnings || []).length ? 'warnings present' : 'clean run'}</b></div>
         </div>
         <div class="mono muted">scan ${r.id} | target ${r.target} | mode ${r.mode} | finished ${fmtDate(r.finished_at)} | duration ${r.duration_ms}ms</div>
 
@@ -382,6 +484,12 @@
               <h3>Stage Yield</h3>
               <div class="timeline">
                 ${stages.map(x => `<div class="stage"><span>${x.name}</span><span class="bar"><span class="fill" style="width:${x.pct}%"></span></span><span>${x.v}</span></div>`).join('')}
+              </div>
+            </div>
+            <div class="box">
+              <h3>Recent URL Yield Trend</h3>
+              <div class="trend">
+                ${trendRows(r.id)}
               </div>
             </div>
           </div>
@@ -447,13 +555,32 @@
       scans = await res.json();
       document.getElementById('pulse').textContent = `${scans.length} indexed scans`;
       document.getElementById('lastRefresh').textContent = `updated ${new Date().toLocaleTimeString()}`;
-      renderScanList(scans);
+      applyFilters();
+      renderScanList(filteredScans);
     }
 
-    document.getElementById('search').addEventListener('input', (e) => {
-      const q = (e.target.value || '').toLowerCase().trim();
-      if (!q) return renderScanList(scans);
-      renderScanList(scans.filter(s => (`${s.id} ${s.target} ${s.mode}`).toLowerCase().includes(q)));
+    function applyFilters() {
+      const q = (document.getElementById('search').value || '').toLowerCase().trim();
+      filteredScans = scans.filter(s => {
+        if (modeFilter !== 'all' && String(s.mode).toLowerCase() !== modeFilter) return false;
+        if (!q) return true;
+        return (`${s.id} ${s.target} ${s.mode}`).toLowerCase().includes(q);
+      });
+    }
+
+    document.getElementById('search').addEventListener('input', () => {
+      applyFilters();
+      renderScanList(filteredScans);
+    });
+
+    document.getElementById('filters').querySelectorAll('.chip').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.getElementById('filters').querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+        btn.classList.add('active');
+        modeFilter = btn.getAttribute('data-mode') || 'all';
+        applyFilters();
+        renderScanList(filteredScans);
+      });
     });
 
     loadScans();
