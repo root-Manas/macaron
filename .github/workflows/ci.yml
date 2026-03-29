@@ -9,55 +9,37 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.9', '3.10', '3.11', '3.12']
-
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
+    - name: Set up Go
+      uses: actions/setup-go@v5
       with:
-        python-version: ${{ matrix.python-version }}
+        go-version-file: go.mod
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pytest rich pyyaml
-        pip install -r requirements.txt
-
-    - name: Syntax check
-      run: python -m py_compile macaron
+    - name: Download modules
+      run: go mod download
 
     - name: Run tests
-      run: pytest tests/ -v --tb=short
+      run: go test ./... -v
 
-    - name: Test CLI commands
+    - name: Build CLI
+      run: mkdir -p bin && go build -o bin/macaron ./cmd/macaron
+
+    - name: CLI smoke tests
       run: |
-        python macaron --version
-        python macaron --help
-        python macaron -C
-        python macaron -P
-        python macaron -S
-        python macaron -L
+        ./bin/macaron --version
+        ./bin/macaron
 
   lint:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - name: Set up Go
+      uses: actions/setup-go@v5
       with:
-        python-version: '3.11'
+        go-version-file: go.mod
 
-    - name: Install flake8
-      run: pip install flake8
-
-    - name: Lint with flake8
-      run: |
-        # Stop on syntax errors or undefined names
-        flake8 macaron --count --select=E9,F63,F7,F82 --show-source --statistics
-        # Warnings (don't fail)
-        flake8 macaron --count --exit-zero --max-line-length=150 --statistics
+    - name: Vet
+      run: go vet ./...

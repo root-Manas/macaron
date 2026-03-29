@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -354,7 +355,7 @@ func scanCommonPorts(hosts []string, threads int) []model.PortHit {
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
-				addr := fmt.Sprintf("%s:%d", j.host, j.port)
+				addr := net.JoinHostPort(j.host, strconv.Itoa(j.port))
 				c, err := net.DialTimeout("tcp", addr, 900*time.Millisecond)
 				if err == nil {
 					_ = c.Close()
