@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>macaronV2 Dashboard</title>
+  <style>
+    :root {
+      --bg: #f6f4ef;
+      --card: #fffaf0;
+      --ink: #172121;
+      --muted: #5b6b73;
+      --accent: #c44900;
+      --accent-2: #2f6f6f;
+      --line: #d7d2c8;
+      --ok: #1f8f4f;
+      --warn: #d07a00;
+      --danger: #b4222d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top right, #f8e6cf 0, transparent 32%),
+        radial-gradient(circle at 10% 90%, #d4ebe8 0, transparent 28%),
+        var(--bg);
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 28px 18px 80px; }
+    .hero {
+      border: 1px solid var(--line);
+      background: linear-gradient(120deg, #fffdf7, #f5f8f7);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 8px 30px rgba(0,0,0,.06);
+    }
+    h1 { margin: 0; letter-spacing: .2px; font-size: 30px; }
+    .sub { color: var(--muted); margin-top: 8px; }
+    .grid { display: grid; grid-template-columns: 320px 1fr; gap: 16px; margin-top: 16px; }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      min-height: 420px;
+    }
+    .list { display: flex; flex-direction: column; gap: 8px; max-height: 580px; overflow: auto; }
+    .scan {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      cursor: pointer;
+      transition: all .16s ease;
+      background: #fff;
+    }
+    .scan:hover { border-color: var(--accent); transform: translateY(-1px); }
+    .scan.active { border-color: var(--accent-2); background: #f4fcfb; }
+    .scan b { display: block; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .stats { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 10px; margin-bottom: 12px; }
+    .stat { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #fff; }
+    .stat .k { color: var(--muted); font-size: 12px; }
+    .stat .v { font-weight: 700; font-size: 20px; margin-top: 4px; }
+    .cols { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+    .box { border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 10px; }
+    .box h3 { margin: 0 0 8px; font-size: 14px; color: var(--accent-2); }
+    ul { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; }
+    li { padding: 6px 0; border-bottom: 1px dashed #e6e1d8; font-size: 13px; }
+    li:last-child { border-bottom: none; }
+    .sev-critical,.sev-high { color: var(--danger); }
+    .sev-medium { color: var(--warn); }
+    .footer { margin-top: 10px; color: var(--muted); font-size: 12px; }
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: repeat(3, minmax(0,1fr)); }
+      .cols { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <h1>macaronV2 Recon Dashboard</h1>
+      <div class="sub">Fast Go pipeline with native collection, browser clarity, and JSON-backed history.</div>
+    </div>
+    <div class="grid">
+      <div class="panel">
+        <h3>Scans</h3>
+        <div id="scanList" class="list"></div>
+      </div>
+      <div class="panel" id="detail">
+        <div class="sub">Select a scan to view details.</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    let current;
+    async function loadScans() {
+      const res = await fetch('/api/scans');
+      const scans = await res.json();
+      const root = document.getElementById('scanList');
+      root.innerHTML = '';
+      scans.forEach((s, idx) => {
+        const el = document.createElement('div');
+        el.className = 'scan';
+        el.innerHTML = `<b>${s.target}</b><span class="muted">${s.mode} | live ${s.stats.live_hosts} | urls ${s.stats.urls}</span><span class="muted">${new Date(s.finished_at).toLocaleString()}</span>`;
+        el.onclick = async () => {
+          document.querySelectorAll('.scan').forEach(x => x.classList.remove('active'));
+          el.classList.add('active');
+          current = s.id;
+          await loadResult(s.id);
+        };
+        root.appendChild(el);
+        if (idx === 0) el.click();
+      });
+    }
+
+    function list(items, render) {
+      if (!items || !items.length) return '<div class="muted">No data</div>';
+      return `<ul>${items.slice(0,150).map(render).join('')}</ul>`;
+    }
+
+    async function loadResult(id) {
+      const res = await fetch('/api/results?id=' + encodeURIComponent(id));
+      const r = await res.json();
+      document.getElementById('detail').innerHTML = `
+        <h2 style="margin:0 0 6px">${r.target}</h2>
+        <div class="sub">scan ${r.id} | mode ${r.mode} | duration ${r.duration_ms}ms</div>
+        <div class="stats">
+          <div class="stat"><div class="k">Subdomains</div><div class="v">${r.stats.subdomains}</div></div>
+          <div class="stat"><div class="k">Live</div><div class="v">${r.stats.live_hosts}</div></div>
+          <div class="stat"><div class="k">Ports</div><div class="v">${r.stats.ports}</div></div>
+          <div class="stat"><div class="k">URLs</div><div class="v">${r.stats.urls}</div></div>
+          <div class="stat"><div class="k">JS</div><div class="v">${r.stats.js_files}</div></div>
+          <div class="stat"><div class="k">Vulns</div><div class="v">${r.stats.vulns}</div></div>
+        </div>
+        <div class="cols">
+          <div class="box"><h3>Live Hosts</h3>${list(r.live_hosts, x => `<li>${x.status_code} <a href="${x.url}" target="_blank">${x.url}</a></li>`)}</div>
+          <div class="box"><h3>Vulnerabilities</h3>${list(r.vulns, x => `<li class="sev-${x.severity}">[${x.severity}] ${x.template} <span class="muted">${x.matched || ''}</span></li>`)}</div>
+          <div class="box"><h3>Top URLs</h3>${list(r.urls, x => `<li>${x}</li>`)}</div>
+          <div class="box"><h3>JavaScript Files</h3>${list(r.js_files, x => `<li>${x}</li>`)}</div>
+        </div>
+        <div class="footer">Warnings: ${(r.warnings || []).join(' | ') || 'None'}</div>
+      `;
+    }
+
+    loadScans();
+  </script>
+</body>
+</html>
