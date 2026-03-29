@@ -20,5 +20,5 @@ Thumbs.db
 # Go build artifacts
 macaronv2.exe
 macaron.exe
-macaron
+/macaron
 bin/
