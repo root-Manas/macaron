@@ -27,6 +27,7 @@ func main() {
 
 func run() int {
 	normalizeLegacyArgs()
+	normalizeCommandArgs()
 
 	var (
 		scanTargets  []string
@@ -58,6 +59,8 @@ func run() int {
 		showAPI      bool
 		setup        bool
 		installTools bool
+		profile      string
+		guide        bool
 	)
 
 	pflag.StringArrayVarP(&scanTargets, "scan", "s", nil, "Scan target(s)")
@@ -90,10 +93,16 @@ func run() int {
 	pflag.BoolVar(&showAPI, "show-api", false, "Show configured API keys (masked)")
 	pflag.BoolVar(&setup, "setup", false, "Show setup screen with tool installation status")
 	pflag.BoolVar(&installTools, "install-tools", false, "Install missing supported tools (Linux)")
+	pflag.StringVar(&profile, "profile", "balanced", "Workflow profile: passive|balanced|aggressive")
+	pflag.BoolVar(&guide, "guide", false, "Show first-principles workflow guide")
 	pflag.Parse()
 
 	if showVersion {
 		fmt.Printf("macaronV2 %s (Go %s, stable)\n", version, runtime.Version())
+		return 0
+	}
+	if guide {
+		printGuide()
 		return 0
 	}
 
@@ -217,6 +226,7 @@ func run() int {
 		printHelp()
 		return 0
 	}
+	applyProfile(profile, &mode, &rate, &threads, &stages)
 	if fast {
 		mode = "fast"
 	}
@@ -237,6 +247,9 @@ func run() int {
 
 	start := time.Now()
 	modeVal := model.Mode(strings.ToLower(mode))
+	if !quiet {
+		fmt.Printf("Workflow profile: %s | mode=%s | stages=%s | rate=%d | threads=%d\n", profile, mode, stages, rate, threads)
+	}
 	res, err := application.Scan(ctx, app.ScanArgs{
 		Targets:       targets,
 		Mode:          modeVal,
@@ -262,10 +275,11 @@ func printHelp() {
 	fmt.Println(`macaronV2 (Go stable rewrite)
 
 Usage:
-  macaron -s example.com
-  macaron -S
-  macaron -R -d example.com -w live
-  macaron --serve --addr 127.0.0.1:8088
+  macaron scan example.com
+  macaron status
+  macaron results -d example.com -w live
+  macaron serve --addr 127.0.0.1:8088
+  macaron setup
 
 Core flags:
   -s, --scan TARGET      Scan one or more targets
@@ -282,6 +296,8 @@ Core flags:
       --show-api          Show masked API keys
       --setup             Show setup screen with tool status
       --install-tools     Install missing supported tools (Linux)
+      --profile NAME      passive|balanced|aggressive
+      --guide             Show first-principles workflow guide
       --serve            Start browser dashboard
       --version          Show version`)
 }
@@ -295,6 +311,97 @@ func normalizeLegacyArgs() {
 			os.Args[i] = "--install-tools"
 		}
 	}
+}
+
+func normalizeCommandArgs() {
+	if len(os.Args) < 2 {
+		return
+	}
+	cmd := strings.ToLower(strings.TrimSpace(os.Args[1]))
+	rest := os.Args[2:]
+	switch cmd {
+	case "scan":
+		args := []string{os.Args[0]}
+		for _, tok := range rest {
+			if strings.HasPrefix(tok, "-") {
+				args = append(args, tok)
+				continue
+			}
+			args = append(args, "--scan", tok)
+		}
+		if len(args) == 1 {
+			args = append(args, "--scan")
+		}
+		os.Args = args
+	case "status":
+		os.Args = append([]string{os.Args[0], "--status"}, rest...)
+	case "results":
+		os.Args = append([]string{os.Args[0], "--results"}, rest...)
+	case "serve":
+		os.Args = append([]string{os.Args[0], "--serve"}, rest...)
+	case "setup":
+		os.Args = append([]string{os.Args[0], "--setup"}, rest...)
+	case "export":
+		os.Args = append([]string{os.Args[0], "--export"}, rest...)
+	case "config":
+		os.Args = append([]string{os.Args[0], "--config"}, rest...)
+	case "guide":
+		os.Args = append([]string{os.Args[0], "--guide"}, rest...)
+	}
+}
+
+func applyProfile(profile string, mode *string, rate *int, threads *int, stages *string) {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "passive":
+		if *mode == "wide" {
+			*mode = "osint"
+		}
+		if *rate == 150 {
+			*rate = 40
+		}
+		if *threads == 30 {
+			*threads = 10
+		}
+		if *stages == "all" {
+			*stages = "subdomains,http,urls"
+		}
+	case "aggressive":
+		if *rate == 150 {
+			*rate = 350
+		}
+		if *threads == 30 {
+			*threads = 70
+		}
+	default:
+		// balanced defaults are already encoded in flags.
+	}
+}
+
+func printGuide() {
+	fmt.Println(`macaronV2 guide (first-principles workflow)
+
+1) Setup once:
+   macaron setup
+   macaron --install-tools
+   macaron --set-api securitytrails=YOUR_KEY
+
+2) Run intentional scans:
+   macaron scan target.com --profile passive
+   macaron scan target.com --profile balanced
+   macaron scan target.com --profile aggressive --stages subdomains,http,ports,urls,vulns
+
+3) Inspect and decide:
+   macaron status
+   macaron results -d target.com -w live
+   macaron serve
+
+4) Export/share:
+   macaron export -o target.json
+
+Profiles:
+  passive    low-noise, low-rate, mostly passive collection
+  balanced   default practical pipeline
+  aggressive high concurrency for authorized deep testing only`)
 }
 
 func macaronHome(override string) (string, error) {
