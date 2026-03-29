@@ -157,3 +157,16 @@ The Go pipeline is stage-driven and optimized around native collectors + concurr
 ## Security and authorization
 
 Use only on assets you own or are explicitly authorized to test. Do not use for unauthorized scanning or bypass attempts.
+
+## Releases
+
+GitHub release automation now lives in `.github/workflows/release.yml`.
+
+To publish a new release:
+
+```bash
+git tag v3.0.1
+git push origin v3.0.1
+```
+
+That tag triggers a build matrix (`linux`, `darwin`, `windows`) and uploads binaries to a GitHub Release.
