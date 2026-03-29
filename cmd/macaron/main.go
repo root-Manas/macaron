@@ -28,7 +28,6 @@ func main() {
 func run() int {
 	normalizeLegacyArgs()
 	normalizeCommandArgs()
-	normalizeCompactFlags()
 
 	var (
 		scanTargets  []string
@@ -64,38 +63,38 @@ func run() int {
 		guide        bool
 	)
 
-	pflag.StringArrayVar(&scanTargets, "scn", nil, "Scan target(s)")
-	pflag.BoolVar(&status, "sts", false, "Show scan status")
-	pflag.BoolVar(&results, "res", false, "Show results")
-	pflag.BoolVar(&listTools, "lst", false, "List external tool availability")
-	pflag.BoolVar(&export, "exp", false, "Export results to JSON")
-	pflag.BoolVar(&configCmd, "cfg", false, "Show config paths")
-	pflag.BoolVar(&pipeline, "pip", false, "Show pipeline path (v2 native pipeline is built-in)")
-	pflag.BoolVar(&serve, "srv", false, "Start web dashboard server")
+	pflag.StringArrayVarP(&scanTargets, "scan", "s", nil, "Scan target(s)")
+	pflag.BoolVarP(&status, "status", "S", false, "Show scan status")
+	pflag.BoolVarP(&results, "results", "R", false, "Show results")
+	pflag.BoolVarP(&listTools, "list-tools", "L", false, "List external tool availability")
+	pflag.BoolVarP(&export, "export", "E", false, "Export results to JSON")
+	pflag.BoolVarP(&configCmd, "config", "C", false, "Show config paths")
+	pflag.BoolVarP(&pipeline, "pipeline", "P", false, "Show pipeline path (v2 native pipeline is built-in)")
+	pflag.BoolVar(&serve, "serve", false, "Start web dashboard server")
 
-	pflag.StringVar(&filePath, "fil", "", "Read targets from file")
-	pflag.BoolVar(&useStdin, "inp", false, "Read targets from stdin")
-	pflag.StringVar(&domain, "dom", "", "Filter by domain")
-	pflag.StringVar(&scanID, "sid", "", "Fetch specific scan ID")
-	pflag.StringVar(&what, "wht", "all", "Result view: all|subdomains|live|ports|urls|js|vulns")
-	pflag.StringVar(&mode, "mod", "wide", "Mode: wide|narrow|fast|deep|osint")
-	pflag.BoolVar(&fast, "fst", false, "Shortcut for mode fast")
-	pflag.BoolVar(&narrow, "nrw", false, "Shortcut for mode narrow")
-	pflag.IntVar(&rate, "rte", 150, "Request rate hint")
-	pflag.IntVar(&threads, "thr", 30, "Worker threads")
-	pflag.IntVar(&limit, "lim", 50, "Output limit")
-	pflag.StringVar(&output, "out", "", "Output file")
-	pflag.BoolVar(&quiet, "qut", false, "Quiet output")
-	pflag.BoolVar(&showVersion, "ver", false, "Show version")
-	pflag.StringVar(&serveAddr, "adr", "127.0.0.1:8088", "Dashboard bind address")
-	pflag.StringVar(&storagePath, "str", "", "Storage root directory (default: ./storage)")
-	pflag.StringVar(&stages, "stg", "all", "Comma-separated stages: subdomains,http,ports,urls,vulns")
-	pflag.StringArrayVar(&setAPI, "sak", nil, "Set API key as name=value (repeatable). Use empty value to unset.")
-	pflag.BoolVar(&showAPI, "shk", false, "Show configured API keys (masked)")
-	pflag.BoolVar(&setup, "stp", false, "Show setup screen with tool installation status")
-	pflag.BoolVar(&installTools, "ins", false, "Install missing supported tools (Linux)")
-	pflag.StringVar(&profile, "prf", "balanced", "Workflow profile: passive|balanced|aggressive")
-	pflag.BoolVar(&guide, "gud", false, "Show first-principles workflow guide")
+	pflag.StringVarP(&filePath, "file", "F", "", "Read targets from file")
+	pflag.BoolVar(&useStdin, "stdin", false, "Read targets from stdin")
+	pflag.StringVarP(&domain, "domain", "d", "", "Filter by domain")
+	pflag.StringVar(&scanID, "id", "", "Fetch specific scan ID")
+	pflag.StringVarP(&what, "what", "w", "all", "Result view: all|subdomains|live|ports|urls|js|vulns")
+	pflag.StringVarP(&mode, "mode", "m", "wide", "Mode: wide|narrow|fast|deep|osint")
+	pflag.BoolVarP(&fast, "fast", "f", false, "Shortcut for mode fast")
+	pflag.BoolVarP(&narrow, "narrow", "n", false, "Shortcut for mode narrow")
+	pflag.IntVar(&rate, "rate", 150, "Request rate hint")
+	pflag.IntVar(&threads, "threads", 30, "Worker threads")
+	pflag.IntVar(&limit, "limit", 50, "Output limit")
+	pflag.StringVarP(&output, "output", "o", "", "Output file")
+	pflag.BoolVarP(&quiet, "quiet", "q", false, "Quiet output")
+	pflag.BoolVar(&showVersion, "version", false, "Show version")
+	pflag.StringVar(&serveAddr, "addr", "127.0.0.1:8088", "Dashboard bind address")
+	pflag.StringVar(&storagePath, "storage", "", "Storage root directory (default: ./storage)")
+	pflag.StringVar(&stages, "stages", "all", "Comma-separated stages: subdomains,http,ports,urls,vulns")
+	pflag.StringArrayVar(&setAPI, "set-api", nil, "Set API key as name=value (repeatable). Use empty value to unset.")
+	pflag.BoolVar(&showAPI, "show-api", false, "Show configured API keys (masked)")
+	pflag.BoolVar(&setup, "setup", false, "Show setup screen with tool installation status")
+	pflag.BoolVar(&installTools, "install-tools", false, "Install missing supported tools (Linux)")
+	pflag.StringVar(&profile, "profile", "balanced", "Workflow profile: passive|balanced|aggressive")
+	pflag.BoolVar(&guide, "guide", false, "Show first-principles workflow guide")
 	pflag.Parse()
 
 	if showVersion {
@@ -278,38 +277,38 @@ func printHelp() {
 Usage:
   macaron scan example.com
   macaron status
-  macaron results -dom example.com -wht live
-  macaron serve -adr 127.0.0.1:8088
+  macaron results -d example.com -w live
+  macaron serve --addr 127.0.0.1:8088
   macaron setup
 
 Core flags:
-  -scn TARGET            Scan one or more targets
-  -fil FILE              Read targets from file
-  -inp                   Read targets from stdin
-  -mod MODE              wide|narrow|fast|deep|osint
-  -sts                   Show scan summaries
-  -res                   Show scan details
-  -exp                   Export JSON
-  -lst                   Show tool availability
-  -str DIR               Use custom storage root (default ./storage)
-  -stg LIST              Choose stages: subdomains,http,ports,urls,vulns
-  -sak k=v               Save API keys to storage config.yaml
-  -shk                   Show masked API keys
-  -stp                   Show setup screen with tool status
-  -ins                   Install missing supported tools (Linux)
-  -prf NAME              passive|balanced|aggressive
-  -gud                   Show first-principles workflow guide
-  -srv                   Start browser dashboard
-  -ver                   Show version`)
+  -s, --scan TARGET      Scan one or more targets
+  -F, --file FILE        Read targets from file
+      --stdin            Read targets from stdin
+  -m, --mode MODE        wide|narrow|fast|deep|osint
+  -S, --status           Show scan summaries
+  -R, --results          Show scan details
+  -E, --export           Export JSON
+  -L, --list-tools       Show tool availability
+      --storage DIR       Use custom storage root (default ./storage)
+      --stages LIST       Choose stages: subdomains,http,ports,urls,vulns
+      --set-api k=v       Save API keys to storage config.yaml
+      --show-api          Show masked API keys
+      --setup             Show setup screen with tool status
+      --install-tools     Install missing supported tools (Linux)
+      --profile NAME      passive|balanced|aggressive
+      --guide             Show first-principles workflow guide
+      --serve            Start browser dashboard
+      --version          Show version`)
 }
 
 func normalizeLegacyArgs() {
 	for i, arg := range os.Args {
 		if arg == "-setup" {
-			os.Args[i] = "-stp"
+			os.Args[i] = "--setup"
 		}
 		if arg == "-install-tools" {
-			os.Args[i] = "-ins"
+			os.Args[i] = "--install-tools"
 		}
 	}
 }
@@ -328,93 +327,27 @@ func normalizeCommandArgs() {
 				args = append(args, tok)
 				continue
 			}
-			args = append(args, "--scn", tok)
+			args = append(args, "--scan", tok)
 		}
 		if len(args) == 1 {
-			args = append(args, "--scn")
+			args = append(args, "--scan")
 		}
 		os.Args = args
 	case "status":
-		os.Args = append([]string{os.Args[0], "--sts"}, rest...)
+		os.Args = append([]string{os.Args[0], "--status"}, rest...)
 	case "results":
-		os.Args = append([]string{os.Args[0], "--res"}, rest...)
+		os.Args = append([]string{os.Args[0], "--results"}, rest...)
 	case "serve":
-		os.Args = append([]string{os.Args[0], "--srv"}, rest...)
+		os.Args = append([]string{os.Args[0], "--serve"}, rest...)
 	case "setup":
-		os.Args = append([]string{os.Args[0], "--stp"}, rest...)
+		os.Args = append([]string{os.Args[0], "--setup"}, rest...)
 	case "export":
-		os.Args = append([]string{os.Args[0], "--exp"}, rest...)
+		os.Args = append([]string{os.Args[0], "--export"}, rest...)
 	case "config":
-		os.Args = append([]string{os.Args[0], "--cfg"}, rest...)
+		os.Args = append([]string{os.Args[0], "--config"}, rest...)
 	case "guide":
-		os.Args = append([]string{os.Args[0], "--gud"}, rest...)
+		os.Args = append([]string{os.Args[0], "--guide"}, rest...)
 	}
-}
-
-func normalizeCompactFlags() {
-	flagMap := map[string]string{
-		"scan": "scn", "s": "scn", "scn": "scn",
-		"status": "sts", "S": "sts", "sts": "sts",
-		"results": "res", "R": "res", "res": "res",
-		"list-tools": "lst", "L": "lst", "lst": "lst",
-		"export": "exp", "E": "exp", "exp": "exp",
-		"config": "cfg", "C": "cfg", "cfg": "cfg",
-		"pipeline": "pip", "P": "pip", "pip": "pip",
-		"serve": "srv", "srv": "srv",
-		"file": "fil", "F": "fil", "fil": "fil",
-		"stdin": "inp", "inp": "inp",
-		"domain": "dom", "d": "dom", "dom": "dom",
-		"id": "sid", "sid": "sid",
-		"what": "wht", "w": "wht", "wht": "wht",
-		"mode": "mod", "m": "mod", "mod": "mod",
-		"fast": "fst", "f": "fst", "fst": "fst",
-		"narrow": "nrw", "n": "nrw", "nrw": "nrw",
-		"rate": "rte", "rte": "rte",
-		"threads": "thr", "thr": "thr",
-		"limit": "lim", "lim": "lim",
-		"output": "out", "o": "out", "out": "out",
-		"quiet": "qut", "q": "qut", "qut": "qut",
-		"version": "ver", "ver": "ver",
-		"addr": "adr", "adr": "adr",
-		"storage": "str", "str": "str",
-		"stages": "stg", "stg": "stg",
-		"set-api": "sak", "sak": "sak",
-		"show-api": "shk", "shk": "shk",
-		"setup": "stp", "stp": "stp",
-		"install-tools": "ins", "ins": "ins",
-		"profile": "prf", "prf": "prf",
-		"guide": "gud", "gud": "gud",
-	}
-	args := make([]string, 0, len(os.Args))
-	args = append(args, os.Args[0])
-	for _, arg := range os.Args[1:] {
-		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && len(arg) > 2 {
-			key := strings.TrimPrefix(arg, "-")
-			val := ""
-			if i := strings.IndexRune(key, '='); i >= 0 {
-				val = key[i:]
-				key = key[:i]
-			}
-			if mapped, ok := flagMap[key]; ok {
-				args = append(args, "--"+mapped+val)
-				continue
-			}
-		}
-		if strings.HasPrefix(arg, "--") {
-			key := strings.TrimPrefix(arg, "--")
-			val := ""
-			if i := strings.IndexRune(key, '='); i >= 0 {
-				val = key[i:]
-				key = key[:i]
-			}
-			if mapped, ok := flagMap[key]; ok {
-				args = append(args, "--"+mapped+val)
-				continue
-			}
-		}
-		args = append(args, arg)
-	}
-	os.Args = args
 }
 
 func applyProfile(profile string, mode *string, rate *int, threads *int, stages *string) {
@@ -449,21 +382,21 @@ func printGuide() {
 
 1) Setup once:
    macaron setup
-   macaron -ins
-   macaron -sak securitytrails=YOUR_KEY
+   macaron --install-tools
+   macaron --set-api securitytrails=YOUR_KEY
 
 2) Run intentional scans:
-   macaron scan target.com -prf passive
-   macaron scan target.com -prf balanced
-   macaron scan target.com -prf aggressive -stg subdomains,http,ports,urls,vulns
+   macaron scan target.com --profile passive
+   macaron scan target.com --profile balanced
+   macaron scan target.com --profile aggressive --stages subdomains,http,ports,urls,vulns
 
 3) Inspect and decide:
    macaron status
-   macaron results -dom target.com -wht live
+   macaron results -d target.com -w live
    macaron serve
 
 4) Export/share:
-   macaron export -out target.json
+   macaron export -o target.json
 
 Profiles:
   passive    low-noise, low-rate, mostly passive collection

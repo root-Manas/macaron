@@ -15,50 +15,17 @@ func withArgs(args []string, fn func()) {
 func TestNormalizeLegacySetup(t *testing.T) {
 	withArgs([]string{"macaron", "-setup"}, func() {
 		normalizeLegacyArgs()
-		if osArgs()[1] != "-stp" {
-			t.Fatalf("expected -stp, got %s", osArgs()[1])
+		if osArgs()[1] != "--setup" {
+			t.Fatalf("expected --setup, got %s", osArgs()[1])
 		}
 	})
 }
 
 func TestNormalizeCommandScan(t *testing.T) {
 	withArgs([]string{"macaron", "scan", "example.com", "--fast"}, func() {
-		normalizeCompactFlags()
 		normalizeCommandArgs()
 		args := osArgs()
-		want := []string{"macaron", "--scn", "example.com", "--fst"}
-		if len(args) != len(want) {
-			t.Fatalf("unexpected len: %#v", args)
-		}
-		for i := range want {
-			if args[i] != want[i] {
-				t.Fatalf("idx %d: got %q want %q", i, args[i], want[i])
-			}
-		}
-	})
-}
-
-func TestNormalizeLongToCompact(t *testing.T) {
-	withArgs([]string{"macaron", "--scan", "example.com", "--threads", "20"}, func() {
-		normalizeCompactFlags()
-		args := osArgs()
-		want := []string{"macaron", "--scn", "example.com", "--thr", "20"}
-		if len(args) != len(want) {
-			t.Fatalf("unexpected len: %#v", args)
-		}
-		for i := range want {
-			if args[i] != want[i] {
-				t.Fatalf("idx %d: got %q want %q", i, args[i], want[i])
-			}
-		}
-	})
-}
-
-func TestNormalizeSingleDashCompact(t *testing.T) {
-	withArgs([]string{"macaron", "-stp", "-ver"}, func() {
-		normalizeCompactFlags()
-		args := osArgs()
-		want := []string{"macaron", "--stp", "--ver"}
+		want := []string{"macaron", "--scan", "example.com", "--fast"}
 		if len(args) != len(want) {
 			t.Fatalf("unexpected len: %#v", args)
 		}
