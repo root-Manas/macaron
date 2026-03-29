@@ -69,3 +69,23 @@ type ToolStatus struct {
 	Name      string `json:"name"`
 	Installed bool   `json:"installed"`
 }
+
+type StageEventType string
+
+const (
+	EventTargetStart StageEventType = "target_start"
+	EventTargetDone  StageEventType = "target_done"
+	EventStageStart  StageEventType = "stage_start"
+	EventStageDone   StageEventType = "stage_done"
+	EventWarn        StageEventType = "warn"
+)
+
+type StageEvent struct {
+	Timestamp  time.Time      `json:"timestamp"`
+	Type       StageEventType `json:"type"`
+	Target     string         `json:"target"`
+	Stage      string         `json:"stage,omitempty"`
+	Message    string         `json:"message,omitempty"`
+	Count      int            `json:"count,omitempty"`
+	DurationMS int64          `json:"duration_ms,omitempty"`
+}
