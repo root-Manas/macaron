@@ -211,7 +211,7 @@ func run() int {
 		return 0
 	}
 	if serve {
-		server := ui.New(application.Store)
+		server := ui.New(application, config.APIKeys)
 		if err := server.Serve(serveAddr); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1

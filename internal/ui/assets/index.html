@@ -274,6 +274,64 @@
       cursor: pointer;
     }
     .btn:hover { border-color: var(--accent); color: var(--accent); }
+    .launch {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #0a1621;
+      padding: 10px;
+      margin-bottom: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .launch label {
+      font-size: 11px;
+      letter-spacing: .05em;
+      color: var(--muted);
+      text-transform: uppercase;
+      font-family: "IBM Plex Mono", monospace;
+    }
+    .launch input, .launch select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0b1723;
+      color: var(--ink);
+      padding: 8px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 12px;
+    }
+    .launch .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    .live-box {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #0a1621;
+      padding: 10px;
+    }
+    .live-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 12px;
+      font-family: "IBM Plex Mono", monospace;
+      color: var(--muted);
+    }
+    .live-log {
+      max-height: 220px;
+      overflow: auto;
+      border: 1px solid #1d3246;
+      border-radius: 10px;
+      background: #07111a;
+      padding: 8px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 12px;
+      color: #b5cde4;
+      white-space: pre-wrap;
+    }
 
     @media (max-width: 1260px) {
       .shell { grid-template-columns: 1fr; }
@@ -298,6 +356,25 @@
     </section>
 
     <aside class="panel left">
+      <div class="launch">
+        <label>Run Scan From UI</label>
+        <input id="scanTarget" placeholder="target (example: google.com)" />
+        <div class="row">
+          <select id="scanMode">
+            <option value="wide">wide</option>
+            <option value="fast">fast</option>
+            <option value="narrow">narrow</option>
+            <option value="deep">deep</option>
+            <option value="osint">osint</option>
+          </select>
+          <input id="scanStages" value="all" placeholder="stages" />
+        </div>
+        <div class="row">
+          <input id="scanRate" type="number" value="150" min="1" />
+          <input id="scanThreads" type="number" value="30" min="1" />
+        </div>
+        <button class="btn" id="startScan">start scan</button>
+      </div>
       <input id="search" class="search" placeholder="search target / mode / id" />
       <div class="filters" id="filters">
         <button class="chip active" data-mode="all">all</button>
@@ -310,8 +387,17 @@
       <div id="scanList" class="scan-list"></div>
     </aside>
 
-    <main class="panel right" id="detail">
-      <div class="muted">Select a scan from the left panel.</div>
+    <main class="panel right">
+      <section class="live-box">
+        <div class="live-head">
+          <span id="liveState">live job: idle</span>
+          <span id="liveUpdated">no updates yet</span>
+        </div>
+        <pre class="live-log" id="liveLog">No live scan selected. Start one from the left panel.</pre>
+      </section>
+      <section id="detail">
+        <div class="muted">Select a scan from the left panel.</div>
+      </section>
     </main>
   </div>
 
@@ -321,8 +407,11 @@
     let map = null;
     let mapMarkers = [];
     const refreshMS = 15000;
+    const liveRefreshMS = 1200;
     let modeFilter = 'all';
     let filteredScans = [];
+    let liveJobs = [];
+    let activeLiveId = '';
 
     function fmtDate(raw) {
       if (!raw) return '-';
@@ -394,6 +483,76 @@
         renderScanList(items);
         loadResult(activeId);
       }
+    }
+
+    function renderLive(job) {
+      const stateNode = document.getElementById('liveState');
+      const updatedNode = document.getElementById('liveUpdated');
+      const logNode = document.getElementById('liveLog');
+      if (!job) {
+        stateNode.textContent = 'live job: idle';
+        updatedNode.textContent = 'no updates yet';
+        logNode.textContent = 'No live scan selected. Start one from the left panel.';
+        return;
+      }
+      stateNode.textContent = `live job: ${job.target} (${job.status})`;
+      updatedNode.textContent = `updated ${fmtDate(job.updated_at)}`;
+      logNode.textContent = (job.log || []).join('\n');
+      logNode.scrollTop = logNode.scrollHeight;
+      if (job.status === 'done' && job.result && job.result.id) {
+        activeId = job.result.id;
+      }
+    }
+
+    async function loadLive() {
+      try {
+        const res = await fetch('/api/live');
+        if (!res.ok) return;
+        liveJobs = await res.json();
+        const running = liveJobs.find(j => j.status === 'running') || liveJobs[0];
+        if (!activeLiveId && running) activeLiveId = running.job_id;
+        if (activeLiveId) {
+          const detail = await fetch('/api/live?id=' + encodeURIComponent(activeLiveId));
+          if (detail.ok) {
+            const job = await detail.json();
+            renderLive(job);
+            if (job.status === 'done' && job.result && job.result.id) {
+              await loadScans();
+              await loadResult(job.result.id);
+            }
+            return;
+          }
+        }
+        renderLive(null);
+      } catch (_) {}
+    }
+
+    async function startScan() {
+      const payload = {
+        target: document.getElementById('scanTarget').value.trim(),
+        mode: document.getElementById('scanMode').value.trim(),
+        stages: document.getElementById('scanStages').value.trim() || 'all',
+        rate: Number(document.getElementById('scanRate').value || 150),
+        threads: Number(document.getElementById('scanThreads').value || 30),
+      };
+      if (!payload.target) {
+        alert('Target is required');
+        return;
+      }
+      const res = await fetch('/api/scan/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        alert('Scan start failed: ' + txt);
+        return;
+      }
+      const data = await res.json();
+      activeLiveId = data.job_id;
+      document.getElementById('scanTarget').value = '';
+      await loadLive();
     }
 
     async function loadHeat() {
@@ -572,6 +731,7 @@
       applyFilters();
       renderScanList(filteredScans);
     });
+    document.getElementById('startScan').addEventListener('click', startScan);
 
     document.getElementById('filters').querySelectorAll('.chip').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -584,10 +744,12 @@
     });
 
     loadScans();
+    loadLive();
     setInterval(async () => {
       await loadScans();
       if (activeId) await loadResult(activeId);
     }, refreshMS);
+    setInterval(loadLive, liveRefreshMS);
   </script>
 </body>
 </html>
