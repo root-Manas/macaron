@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/root-Manas/macaron/internal/engine"
 	"github.com/root-Manas/macaron/internal/model"
 	"github.com/root-Manas/macaron/internal/store"
@@ -89,20 +90,28 @@ func (a *App) ShowStatus(limit int) (string, error) {
 		return "", err
 	}
 	if len(summaries) == 0 {
-		return "No scans found. Run: macaron -s example.com", nil
+		return "No scans found. Run: macaron scan example.com\n", nil
 	}
 	b := strings.Builder{}
-	b.WriteString("macaronV2 status\n")
 	tw := table.NewWriter()
+	tw.SetStyle(tableStyle())
 	tw.AppendHeader(table.Row{"ID", "TARGET", "MODE", "LIVE", "URLS", "VULNS", "FINISHED"})
 	for _, s := range summaries {
+		vulnCell := strconv.Itoa(s.Stats.Vulns)
+		if s.Stats.Vulns > 0 {
+			vulnCell = text.Colors{text.FgRed, text.Bold}.Sprint(vulnCell)
+		}
+		liveCell := strconv.Itoa(s.Stats.LiveHosts)
+		if s.Stats.LiveHosts > 0 {
+			liveCell = text.Colors{text.FgGreen}.Sprint(liveCell)
+		}
 		tw.AppendRow(table.Row{
-			s.ID,
-			s.Target,
+			text.Colors{text.FgCyan}.Sprint(s.ID),
+			text.Colors{text.Bold}.Sprint(s.Target),
 			s.Mode,
-			strconv.Itoa(s.Stats.LiveHosts),
+			liveCell,
 			strconv.Itoa(s.Stats.URLs),
-			strconv.Itoa(s.Stats.Vulns),
+			vulnCell,
 			s.FinishedAt.Format(time.RFC3339),
 		})
 	}
@@ -257,17 +266,25 @@ func SetupCatalog() []SetupTool {
 
 func RenderSetup(tools []SetupTool) string {
 	tw := table.NewWriter()
+	tw.SetStyle(tableStyle())
 	tw.AppendHeader(table.Row{"TOOL", "REQUIRED", "STATUS", "INSTALL"})
 	for _, t := range tools {
-		required := "no"
+		required := text.Colors{text.FgYellow}.Sprint("no")
 		if t.Required {
-			required = "yes"
+			required = text.Colors{text.FgCyan, text.Bold}.Sprint("yes")
 		}
-		status := "missing"
+		var status string
 		if t.Installed {
-			status = "installed"
+			status = text.Colors{text.FgGreen, text.Bold}.Sprint("✔ installed")
+		} else {
+			status = text.Colors{text.FgRed}.Sprint("✘ missing")
 		}
-		tw.AppendRow(table.Row{t.Name, required, status, t.InstallCmd})
+		tw.AppendRow(table.Row{
+			text.Colors{text.Bold}.Sprint(t.Name),
+			required,
+			status,
+			text.Colors{text.Faint}.Sprint(t.InstallCmd),
+		})
 	}
 	b := strings.Builder{}
 	b.WriteString("macaron setup\n")
@@ -297,15 +314,24 @@ func InstallMissingTools(ctx context.Context, tools []SetupTool) ([]string, erro
 
 func RenderScanSummary(results []model.ScanResult) string {
 	tw := table.NewWriter()
+	tw.SetStyle(tableStyle())
 	tw.AppendHeader(table.Row{"TARGET", "MODE", "SUBDOMAINS", "LIVE", "URLS", "VULNS", "DURATION"})
 	for _, r := range results {
+		vulnCell := strconv.Itoa(r.Stats.Vulns)
+		if r.Stats.Vulns > 0 {
+			vulnCell = text.Colors{text.FgRed, text.Bold}.Sprint(vulnCell)
+		}
+		liveCell := strconv.Itoa(r.Stats.LiveHosts)
+		if r.Stats.LiveHosts > 0 {
+			liveCell = text.Colors{text.FgGreen}.Sprint(liveCell)
+		}
 		tw.AppendRow(table.Row{
-			r.Target,
+			text.Colors{text.Bold}.Sprint(r.Target),
 			r.Mode,
 			r.Stats.Subdomains,
-			r.Stats.LiveHosts,
+			liveCell,
 			r.Stats.URLs,
-			r.Stats.Vulns,
+			vulnCell,
 			fmt.Sprintf("%dms", r.DurationMS),
 		})
 	}
@@ -386,4 +412,13 @@ func ParseStages(raw string) map[string]bool {
 		out[v] = true
 	}
 	return out
+}
+
+// tableStyle returns a consistent styled table style for all output tables.
+func tableStyle() table.Style {
+	s := table.StyleRounded
+	s.Color.Header = text.Colors{text.FgCyan, text.Bold}
+	s.Color.Border = text.Colors{text.Faint}
+	s.Color.Separator = text.Colors{text.Faint}
+	return s
 }

@@ -47,38 +47,50 @@ func (r *LiveRenderer) Handle(ev model.StageEvent) {
 		r.target = ev.Target
 		r.scanStart = chooseTime(ev.Timestamp, time.Now())
 		r.stage = ""
-		r.message = "initializing workflow"
+		r.message = "initializing"
 		r.stageStart = time.Now()
-		r.printLinef("%s target=%s", r.info("SCAN"), r.strong(ev.Target))
+		r.printLinef("%s target: %s", r.info("SCAN"), r.strong(ev.Target))
 		r.startSpinnerLocked()
 	case model.EventStageStart:
 		r.stage = ev.Stage
 		r.message = ev.Message
 		r.stageStart = chooseTime(ev.Timestamp, time.Now())
-		r.printLinef("%s stage=%s %s", r.info("RUN"), r.stageLabel(ev.Stage), r.dim(ev.Message))
+		r.printLinef("%s [%s] %s", r.info("RUN"), r.stageLabel(ev.Stage), r.dim(ev.Message))
 	case model.EventWarn:
 		msg := ev.Message
 		if strings.TrimSpace(msg) == "" {
 			msg = "warning"
 		}
 		if ev.Stage != "" {
-			r.printLinef("%s stage=%s %s", r.warn("WARN"), r.stageLabel(ev.Stage), msg)
+			r.printLinef("%s [%s] %s", r.warnTag("WRN"), r.stageLabel(ev.Stage), msg)
 		} else {
-			r.printLinef("%s %s", r.warn("WARN"), msg)
+			r.printLinef("%s %s", r.warnTag("WRN"), msg)
 		}
 	case model.EventStageDone:
 		dur := time.Duration(ev.DurationMS) * time.Millisecond
 		if dur <= 0 && !r.stageStart.IsZero() {
 			dur = time.Since(r.stageStart)
 		}
-		r.printLinef("%s stage=%s count=%d in %s", r.ok("DONE"), r.stageLabel(ev.Stage), ev.Count, dur.Round(time.Millisecond))
+		r.printLinef("%s [%s] %s %s %s %s",
+			r.ok("OK "),
+			r.stageLabel(ev.Stage),
+			r.dim("count:"),
+			r.strong(fmt.Sprintf("%d", ev.Count)),
+			r.dim("in"),
+			r.dim(dur.Round(time.Millisecond).String()),
+		)
 	case model.EventTargetDone:
 		total := time.Duration(ev.DurationMS) * time.Millisecond
 		if total <= 0 && !r.scanStart.IsZero() {
 			total = time.Since(r.scanStart)
 		}
 		r.stopSpinnerLocked()
-		r.printLinef("%s target=%s completed in %s", r.ok("COMPLETE"), r.strong(ev.Target), total.Round(time.Millisecond))
+		r.printLinef("%s target: %s %s %s",
+			r.ok("OK "),
+			r.strong(ev.Target),
+			r.dim("completed in"),
+			r.dim(total.Round(time.Millisecond).String()),
+		)
 	}
 }
 
@@ -107,8 +119,9 @@ func (r *LiveRenderer) stopSpinnerLocked() {
 }
 
 func (r *LiveRenderer) spin() {
-	frames := []string{"|", "/", "-", `\`}
-	ticker := time.NewTicker(120 * time.Millisecond)
+	// Braille spinner — used by Nuclei, httpx, and other ProjectDiscovery tools.
+	frames := []string{"⣾", "⣽", "⣻", "⣷", "⣯", "⣟", "⡿", "⢿"}
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
@@ -130,9 +143,9 @@ func (r *LiveRenderer) spin() {
 			line := fmt.Sprintf("%s %s %s %s %s",
 				r.spinStyle(frames[r.spinFrame]),
 				r.strong(r.target),
-				r.dim("stage="+stage),
-				msg,
-				r.dim("t="+elapsed),
+				r.dim("["+stage+"]"),
+				r.dim(msg),
+				r.dim("("+elapsed+")"),
 			)
 			fmt.Fprintf(r.out, "\r\033[2K%s", line)
 			r.lastPrinted = time.Now()
@@ -144,7 +157,7 @@ func (r *LiveRenderer) spin() {
 }
 
 func (r *LiveRenderer) printLinef(format string, args ...any) {
-	// Avoid overwriting a spinner frame line.
+	// Clear the spinner line before printing a new log line.
 	fmt.Fprint(r.out, "\r\033[2K")
 	fmt.Fprintf(r.out, format+"\n", args...)
 }
@@ -164,32 +177,35 @@ func (r *LiveRenderer) dim(v string) string {
 }
 
 func (r *LiveRenderer) info(v string) string {
-	return r.paint(v, "36")
+	return r.badge(v, "36")
 }
 
 func (r *LiveRenderer) ok(v string) string {
-	return r.paint(v, "32")
+	return r.badge(v, "32")
 }
 
-func (r *LiveRenderer) warn(v string) string {
-	return r.paint(v, "33")
+func (r *LiveRenderer) warnTag(v string) string {
+	return r.badge(v, "33")
 }
 
 func (r *LiveRenderer) spinStyle(v string) string {
-	return r.paint(v, "35")
+	if !r.color {
+		return v
+	}
+	return "\033[35m" + v + "\033[0m"
 }
 
-func (r *LiveRenderer) paint(v, code string) string {
+func (r *LiveRenderer) badge(v, code string) string {
 	if !r.color {
 		return "[" + v + "]"
 	}
-	return "\033[" + code + "m[" + v + "]\033[0m"
+	return "\033[" + code + ";1m[" + strings.TrimSpace(v) + "]\033[0m"
 }
 
 func (r *LiveRenderer) stageLabel(stage string) string {
 	stage = strings.TrimSpace(strings.ToLower(stage))
 	if stage == "" {
-		return "unknown"
+		return "?"
 	}
 	return stage
 }
@@ -200,3 +216,4 @@ func chooseTime(v time.Time, fallback time.Time) time.Time {
 	}
 	return v
 }
+
