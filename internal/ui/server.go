@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -30,14 +31,32 @@ func New(st *store.Store) *Server {
 	}
 }
 
-func (s *Server) Serve(addr string) error {
+func (s *Server) Serve(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/scans", s.handleScans)
 	mux.HandleFunc("/api/results", s.handleResults)
 	mux.HandleFunc("/api/heat", s.handleHeat)
-	fmt.Printf("macaronV2 dashboard on http://%s\n", addr)
-	return http.ListenAndServe(addr, mux)
+	mux.HandleFunc("/api/analytics", s.handleAnalytics)
+	srv := &http.Server{Addr: addr, Handler: mux}
+	fmt.Printf("macaron dashboard → http://%s  (Ctrl-C to stop)\n", addr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutCtx)
+	}
 }
 
 func (s *Server) handleScans(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +130,7 @@ func (s *Server) handleHeat(w http.ResponseWriter, r *http.Request) {
 			if ip == "" {
 				continue
 			}
-			p, ok := s.lookupGeo(ip)
+			p, ok := s.lookupGeo(r.Context(), ip)
 			if !ok {
 				continue
 			}
@@ -130,6 +149,15 @@ func (s *Server) handleHeat(w http.ResponseWriter, r *http.Request) {
 		out = append(out, p)
 	}
 	writeJSON(w, out)
+}
+
+func (s *Server) handleAnalytics(w http.ResponseWriter, r *http.Request) {
+	report, err := s.Store.Analytics()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, report)
 }
 
 func hostFromURL(raw string) string {
@@ -161,7 +189,7 @@ func firstResolvableIP(host string) string {
 	return ""
 }
 
-func (s *Server) lookupGeo(ip string) (heatPoint, bool) {
+func (s *Server) lookupGeo(ctx context.Context, ip string) (heatPoint, bool) {
 	s.cacheMu.Lock()
 	if p, ok := s.geoCache[ip]; ok {
 		s.cacheMu.Unlock()
@@ -170,7 +198,10 @@ func (s *Server) lookupGeo(ip string) (heatPoint, bool) {
 	s.cacheMu.Unlock()
 
 	client := &http.Client{Timeout: 4 * time.Second}
-	req, _ := http.NewRequest(http.MethodGet, "http://ip-api.com/json/"+ip+"?fields=status,country,city,lat,lon", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://ip-api.com/json/"+ip+"?fields=status,country,city,lat,lon", nil)
+	if err != nil {
+		return heatPoint{}, false
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return heatPoint{}, false

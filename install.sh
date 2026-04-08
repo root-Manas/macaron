@@ -10,14 +10,25 @@ if ! command -v go >/dev/null 2>&1; then
 fi
 
 mkdir -p "$HOME/.local/bin"
-echo "[macaronV2] building binary..."
+echo "[macaron] building binary..."
 go mod tidy
 go build -o "$HOME/.local/bin/macaron" ./cmd/macaron
 chmod +x "$HOME/.local/bin/macaron"
 
-if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null; then
-  echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-fi
+PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
-echo "[macaronV2] installed to $HOME/.local/bin/macaron"
-echo "[macaronV2] run: macaron --version"
+add_to_profile() {
+  local profile="$1"
+  if [ -f "$profile" ] && ! grep -qF 'HOME/.local/bin' "$profile" 2>/dev/null; then
+    echo "$PATH_LINE" >> "$profile"
+    echo "[macaron] added PATH entry to $profile"
+  fi
+}
+
+add_to_profile "$HOME/.bashrc"
+add_to_profile "$HOME/.zshrc"
+add_to_profile "$HOME/.profile"
+
+echo "[macaron] installed to $HOME/.local/bin/macaron"
+echo "[macaron] restart your shell or run:  export PATH=\"\$HOME/.local/bin:\$PATH\""
+echo "[macaron] then run:  macaron --version"

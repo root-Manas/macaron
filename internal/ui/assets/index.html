@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>macaronV2 Ops Console</title>
+  <title>macaron Ops Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
@@ -275,12 +275,101 @@
     }
     .btn:hover { border-color: var(--accent); color: var(--accent); }
 
+    .ana-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0,1fr));
+      gap: 12px;
+    }
+    .ana-totals {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0,1fr));
+      gap: 9px;
+      margin-bottom: 10px;
+    }
+    .bar-chart { display: flex; flex-direction: column; gap: 6px; }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 130px 1fr 50px;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      font-family: "IBM Plex Mono", monospace;
+    }
+    .bar-inner {
+      height: 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #07121b;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #4dfbc6, #59b7ff);
+      animation: grow .4s ease;
+    }
+    .sev-bar-fill.critical { background: linear-gradient(90deg, #ff6f8f, #ff3355); }
+    .sev-bar-fill.high { background: linear-gradient(90deg, #ff9060, #ff6f8f); }
+    .sev-bar-fill.medium { background: linear-gradient(90deg, #ffcc66, #ffaa33); }
+    .sev-bar-fill.low { background: linear-gradient(90deg, #59b7ff, #4dfbc6); }
+    .day-chart {
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      height: 80px;
+      padding-bottom: 2px;
+    }
+    .day-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      cursor: default;
+    }
+    .day-bar-wrap {
+      flex: 1;
+      width: 100%;
+      display: flex;
+      align-items: flex-end;
+    }
+    .day-bar {
+      width: 100%;
+      background: linear-gradient(0deg, #4dfbc6, #59b7ff);
+      border-radius: 3px 3px 0 0;
+      min-height: 2px;
+      animation: grow .4s ease;
+    }
+    .day-label {
+      font-size: 10px;
+      color: var(--muted);
+      font-family: "IBM Plex Mono", monospace;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      transform: rotate(180deg);
+      max-height: 60px;
+      overflow: hidden;
+    }
+    .ana-nav {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 6px 12px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 12px;
+      color: var(--muted);
+      background: #0a1723;
+      cursor: pointer;
+      transition: all .15s ease;
+    }
+    .ana-nav:hover, .ana-nav.active { border-color: var(--accent); color: var(--accent); }
     @media (max-width: 1260px) {
       .shell { grid-template-columns: 1fr; }
       .left { max-height: 300px; }
       .summary { grid-template-columns: repeat(3, minmax(0,1fr)); }
       .split { grid-template-columns: 1fr; }
       .status-grid { grid-template-columns: 1fr; }
+      .ana-grid { grid-template-columns: 1fr; }
+      .ana-totals { grid-template-columns: repeat(2, minmax(0,1fr)); }
     }
   </style>
 </head>
@@ -288,10 +377,11 @@
   <div class="shell">
     <section class="topbar">
       <div>
-        <h1 class="title">macaronV2 OPS Console</h1>
-        <div class="tagline">Intent-first recon: setup -> scan -> inspect -> export</div>
+        <h1 class="title">macaron Ops Console</h1>
+        <div class="tagline">setup → scan → inspect → export</div>
       </div>
       <div class="pill-grid">
+        <button class="ana-nav" id="anaToggle">analytics</button>
         <div class="pill mono" id="pulse">loading scans...</div>
         <div class="pill mono warn" id="lastRefresh">refreshing...</div>
       </div>
@@ -312,6 +402,10 @@
 
     <main class="panel right" id="detail">
       <div class="muted">Select a scan from the left panel.</div>
+    </main>
+
+    <main class="panel right" id="anaPanel" style="display:none;grid-column:1/-1;padding:14px;">
+      <div class="muted">Loading analytics...</div>
     </main>
   </div>
 
@@ -588,6 +682,112 @@
       await loadScans();
       if (activeId) await loadResult(activeId);
     }, refreshMS);
+
+    // ── Analytics panel ────────────────────────────────────────────
+    let analyticsOpen = false;
+
+    function fmtMs(ms) {
+      if (!ms) return '0ms';
+      if (ms < 1000) return ms + 'ms';
+      return (ms / 1000).toFixed(1) + 's';
+    }
+
+    function renderAnalytics(r) {
+      const panel = document.getElementById('anaPanel');
+      const t = r.totals || {};
+      const days = r.days || [];
+      const maxVulns = Math.max(...(r.top_targets || []).map(x => x.vulns), 1);
+      const maxSev = Math.max(...(r.severity_dist || []).map(x => x.count), 1);
+      // Ensure maxDay >= 1 so the bar height calculation never divides by zero.
+      const maxDay = Math.max(...days.map(d => (d.vulns || 0) + (d.live_hosts || 0)), 1);
+
+      const dayChart = days.length === 0
+        ? '<div class="muted">No scan history yet.</div>'
+        : `<div class="day-chart">${days.map(d => {
+            const total = (d.vulns || 0) + (d.live_hosts || 0);
+            // Use at least 4% height so bars are always visible.
+            const h = Math.max(4, Math.round((total / maxDay) * 100));
+            const label = d.day.slice(5); // MM-DD
+            return `<div class="day-col" title="${d.day}: ${d.scans} scan(s), ${d.live_hosts} live, ${d.vulns} vulns">
+              <div class="day-bar-wrap"><div class="day-bar" style="height:${h}%"></div></div>
+              <div class="day-label">${label}</div>
+            </div>`;
+          }).join('')}</div>`;
+
+      const topTargetRows = (r.top_targets || []).length === 0
+        ? '<div class="muted">No targets yet.</div>'
+        : `<div class="bar-chart">${(r.top_targets || []).map(x => {
+            const w = Math.max(4, Math.round((x.vulns / maxVulns) * 100));
+            return `<div class="bar-row"><span>${x.target}</span><span class="bar-inner"><span class="bar-fill" style="width:${w}%"></span></span><span>${x.vulns} v</span></div>`;
+          }).join('')}</div>`;
+
+      const sevRows = (r.severity_dist || []).length === 0
+        ? '<div class="muted">No vulnerability data.</div>'
+        : `<div class="bar-chart">${(r.severity_dist || []).map(x => {
+            const w = Math.max(4, Math.round((x.count / maxSev) * 100));
+            return `<div class="bar-row"><span>${x.severity}</span><span class="bar-inner"><span class="bar-fill sev-bar-fill ${x.severity}" style="width:${w}%"></span></span><span>${x.count}</span></div>`;
+          }).join('')}</div>`;
+
+      panel.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h2 style="margin:0;font-size:16px;letter-spacing:.08em;text-transform:uppercase;">Analytics</h2>
+          <span class="muted mono" style="font-size:12px;">across ${r.scan_count || 0} total scans · avg ${fmtMs(r.avg_duration_ms)} per scan</span>
+        </div>
+        <div class="ana-totals">
+          <div class="metric"><div class="k">subdomains</div><div class="v">${t.subdomains || 0}</div></div>
+          <div class="metric"><div class="k">live hosts</div><div class="v">${t.live_hosts || 0}</div></div>
+          <div class="metric"><div class="k">ports</div><div class="v">${t.ports || 0}</div></div>
+          <div class="metric"><div class="k">urls</div><div class="v">${t.urls || 0}</div></div>
+          <div class="metric"><div class="k">js files</div><div class="v">${t.js_files || 0}</div></div>
+          <div class="metric"><div class="k">vulns</div><div class="v">${t.vulns || 0}</div></div>
+        </div>
+        <div class="ana-grid">
+          <div class="box">
+            <h3>Daily Activity (live + vulns)</h3>
+            ${dayChart}
+          </div>
+          <div class="box">
+            <h3>Top Targets by Vuln Count</h3>
+            ${topTargetRows}
+          </div>
+          <div class="box">
+            <h3>Vulnerability Severity Distribution</h3>
+            ${sevRows}
+          </div>
+        </div>
+      `;
+    }
+
+    async function loadAnalytics() {
+      try {
+        const res = await fetch('/api/analytics');
+        if (!res.ok) return;
+        const data = await res.json();
+        renderAnalytics(data);
+      } catch (_) {
+        document.getElementById('anaPanel').innerHTML = '<div class="muted">Analytics unavailable.</div>';
+      }
+    }
+
+    document.getElementById('anaToggle').addEventListener('click', () => {
+      analyticsOpen = !analyticsOpen;
+      const panel = document.getElementById('anaPanel');
+      const scanArea = document.querySelector('.panel.left');
+      const detail = document.getElementById('detail');
+      const btn = document.getElementById('anaToggle');
+      if (analyticsOpen) {
+        panel.style.display = 'block';
+        scanArea.style.display = 'none';
+        detail.style.display = 'none';
+        btn.classList.add('active');
+        loadAnalytics();
+      } else {
+        panel.style.display = 'none';
+        scanArea.style.display = '';
+        detail.style.display = '';
+        btn.classList.remove('active');
+      }
+    });
   </script>
 </body>
 </html>

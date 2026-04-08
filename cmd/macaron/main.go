@@ -211,8 +211,10 @@ func run() int {
 		return 0
 	}
 	if serve {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
 		server := ui.New(application.Store)
-		if err := server.Serve(serveAddr); err != nil {
+		if err := server.Serve(ctx, serveAddr); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
 		}
@@ -284,34 +286,53 @@ func run() int {
 }
 
 func printHelp() {
-	fmt.Println(`macaronV2 (Go stable rewrite)
+	fmt.Println(`macaron - reconnaissance workflow tool
 
 Usage:
   macaron scan example.com
+  macaron scan example.com --profile passive
+  macaron scan example.com --stages subdomains,http,urls
   macaron status
-  macaron results -dom example.com -wht live
-  macaron serve -adr 127.0.0.1:8088
+  macaron results --dom example.com --wht live
+  macaron serve --addr 127.0.0.1:8088
   macaron setup
+  macaron export --out results.json
 
-Core flags:
-  -scn TARGET            Scan one or more targets
-  -fil FILE              Read targets from file
-  -inp                   Read targets from stdin
-  -mod MODE              wide|narrow|fast|deep|osint
-  -sts                   Show scan summaries
-  -res                   Show scan details
-  -exp                   Export JSON
-  -lst                   Show tool availability
-  -str DIR               Use custom storage root (default ./storage)
-  -stg LIST              Choose stages: subdomains,http,ports,urls,vulns
-  -sak k=v               Save API keys to storage config.yaml
-  -shk                   Show masked API keys
-  -stp                   Show setup screen with tool status
-  -ins                   Install missing supported tools (Linux)
-  -prf NAME              passive|balanced|aggressive
-  -gud                   Show first-principles workflow guide
-  -srv                   Start browser dashboard
-  -ver                   Show version`)
+Core commands:
+  scan TARGET            Scan one or more targets (positional or --scn)
+  status                 Show recent scan summaries
+  results                Show detailed scan results
+  serve                  Start web dashboard
+  setup                  Show tool installation status
+  export                 Export scan results to JSON
+  guide                  Show workflow guide
+
+Scan flags:
+  --scn TARGET           Scan one or more targets (repeatable)
+  --fil FILE             Read targets from file
+  --inp                  Read targets from stdin
+  --profile NAME         passive|balanced|aggressive (default: balanced)
+  --stages LIST          subdomains,http,ports,urls,vulns (default: all)
+  --mod MODE             wide|narrow|fast|deep|osint
+  --rate N               Request rate hint (default: 150)
+  --threads N            Worker threads (default: 30)
+
+Output flags:
+  --dom DOMAIN           Filter results by domain
+  --wht VIEW             all|subdomains|live|ports|urls|js|vulns
+  --lim N                Output row limit (default: 50)
+  --out FILE             Output file path
+  --quiet                Suppress progress output
+
+API keys:
+  --set-api k=v          Save API key (e.g. securitytrails=KEY)
+  --show-api             Show configured API keys (masked)
+
+Other:
+  --storage DIR          Storage root (default: ./storage)
+  --addr ADDR            Dashboard bind address (default: 127.0.0.1:8088)
+  --version              Show version
+  --guide                Show first-principles workflow guide`)
 }
 
 func normalizeLegacyArgs() {
@@ -340,9 +361,6 @@ func normalizeCommandArgs() {
 				continue
 			}
 			args = append(args, "--scn", tok)
-		}
-		if len(args) == 1 {
-			args = append(args, "--scn")
 		}
 		os.Args = args
 	case "status":
@@ -456,30 +474,30 @@ func applyProfile(profile string, mode *string, rate *int, threads *int, stages 
 }
 
 func printGuide() {
-	fmt.Println(`macaronV2 guide (first-principles workflow)
+	fmt.Println(`macaron workflow guide
 
 1) Setup once:
    macaron setup
-   macaron -ins
-   macaron -sak securitytrails=YOUR_KEY
+   macaron --ins
+   macaron --set-api securitytrails=YOUR_KEY
 
-2) Run intentional scans:
-   macaron scan target.com -prf passive
-   macaron scan target.com -prf balanced
-   macaron scan target.com -prf aggressive -stg subdomains,http,ports,urls,vulns
+2) Run scans:
+   macaron scan target.com --profile passive
+   macaron scan target.com --profile balanced
+   macaron scan target.com --profile aggressive --stages subdomains,http,ports,urls,vulns
 
-3) Inspect and decide:
+3) Inspect and triage:
    macaron status
-   macaron results -dom target.com -wht live
+   macaron results --dom target.com --wht live
    macaron serve
 
-4) Export/share:
-   macaron export -out target.json
+4) Export:
+   macaron export --out target.json
 
 Profiles:
-  passive    low-noise, low-rate, mostly passive collection
-  balanced   default practical pipeline
-  aggressive high concurrency for authorized deep testing only`)
+  passive      low rate, low concurrency, passive collection only
+  balanced     default practical pipeline
+  aggressive   high concurrency for authorized deep testing only`)
 }
 
 func macaronHome(override string) (string, error) {
