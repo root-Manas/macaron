@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/root-Manas/macaron/internal/engine"
@@ -89,21 +88,27 @@ func (a *App) ShowStatus(limit int) (string, error) {
 		return "", err
 	}
 	if len(summaries) == 0 {
-		return "No scans found. Run: macaron -s example.com", nil
+		return "No scans found.\nRun: macaron scan example.com\n", nil
 	}
 	b := strings.Builder{}
-	b.WriteString("macaronV2 status\n")
+	b.WriteString("macaron status\n")
 	tw := table.NewWriter()
-	tw.AppendHeader(table.Row{"ID", "TARGET", "MODE", "LIVE", "URLS", "VULNS", "FINISHED"})
+	tw.AppendHeader(table.Row{"ID", "TARGET", "MODE", "SUBS", "LIVE", "PORTS", "URLS", "VULNS", "FINISHED"})
 	for _, s := range summaries {
+		shortID := s.ID
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
 		tw.AppendRow(table.Row{
-			s.ID,
+			shortID,
 			s.Target,
 			s.Mode,
+			strconv.Itoa(s.Stats.Subdomains),
 			strconv.Itoa(s.Stats.LiveHosts),
+			strconv.Itoa(s.Stats.Ports),
 			strconv.Itoa(s.Stats.URLs),
 			strconv.Itoa(s.Stats.Vulns),
-			s.FinishedAt.Format(time.RFC3339),
+			s.FinishedAt.Format("2006-01-02 15:04"),
 		})
 	}
 	b.WriteString(tw.Render())
@@ -188,9 +193,9 @@ func ParseTargets(raw []string, filePath string, stdin bool) ([]string, error) {
 
 func formatResults(res model.ScanResult, what string, limit int) string {
 	b := strings.Builder{}
-	b.WriteString(fmt.Sprintf("Scan: %s (%s)\n", res.Target, res.ID))
-	b.WriteString(fmt.Sprintf("Mode: %s  Duration: %dms\n", res.Mode, res.DurationMS))
-	b.WriteString(fmt.Sprintf("Stats: subdomains=%d live=%d ports=%d urls=%d js=%d vulns=%d\n\n",
+	b.WriteString(fmt.Sprintf("target: %s  id: %s\n", res.Target, res.ID))
+	b.WriteString(fmt.Sprintf("mode: %s  duration: %dms\n", res.Mode, res.DurationMS))
+	b.WriteString(fmt.Sprintf("subdomains: %d  live: %d  ports: %d  urls: %d  js: %d  vulns: %d\n\n",
 		res.Stats.Subdomains, res.Stats.LiveHosts, res.Stats.Ports, res.Stats.URLs, res.Stats.JSFiles, res.Stats.Vulns,
 	))
 
@@ -200,9 +205,13 @@ func formatResults(res model.ScanResult, what string, limit int) string {
 			b.WriteString(v + "\n")
 		}
 	case "live":
+		tw := table.NewWriter()
+		tw.AppendHeader(table.Row{"STATUS", "URL", "TITLE"})
 		for _, v := range firstNLive(res.LiveHosts, limit) {
-			b.WriteString(fmt.Sprintf("%d %s %s\n", v.StatusCode, v.URL, v.Title))
+			tw.AppendRow(table.Row{v.StatusCode, v.URL, v.Title})
 		}
+		b.WriteString(tw.Render())
+		b.WriteString("\n")
 	case "ports":
 		for _, v := range firstNPorts(res.Ports, limit) {
 			b.WriteString(fmt.Sprintf("%s:%d\n", v.Host, v.Port))
@@ -216,9 +225,13 @@ func formatResults(res model.ScanResult, what string, limit int) string {
 			b.WriteString(v + "\n")
 		}
 	case "vulns":
+		tw := table.NewWriter()
+		tw.AppendHeader(table.Row{"SEVERITY", "TEMPLATE", "MATCHED"})
 		for _, v := range firstNVulns(res.Vulns, limit) {
-			b.WriteString(fmt.Sprintf("[%s] %s -> %s\n", v.Severity, v.Template, v.Matched))
+			tw.AppendRow(table.Row{strings.ToUpper(v.Severity), v.Template, v.Matched})
 		}
+		b.WriteString(tw.Render())
+		b.WriteString("\n")
 	default:
 		enc, _ := json.MarshalIndent(res, "", "  ")
 		b.WriteString(string(enc) + "\n")
@@ -257,7 +270,8 @@ func SetupCatalog() []SetupTool {
 
 func RenderSetup(tools []SetupTool) string {
 	tw := table.NewWriter()
-	tw.AppendHeader(table.Row{"TOOL", "REQUIRED", "STATUS", "INSTALL"})
+	tw.AppendHeader(table.Row{"TOOL", "REQUIRED", "STATUS", "INSTALL COMMAND"})
+	installedCount := 0
 	for _, t := range tools {
 		required := "no"
 		if t.Required {
@@ -265,14 +279,30 @@ func RenderSetup(tools []SetupTool) string {
 		}
 		status := "missing"
 		if t.Installed {
-			status = "installed"
+			status = "ok"
+			installedCount++
 		}
 		tw.AppendRow(table.Row{t.Name, required, status, t.InstallCmd})
 	}
 	b := strings.Builder{}
 	b.WriteString("macaron setup\n")
 	b.WriteString(tw.Render())
-	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("\n%d / %d tools installed\n", installedCount, len(tools)))
+	missing := 0
+	for _, t := range tools {
+		if t.Required && !t.Installed {
+			missing++
+		}
+	}
+	if missing > 0 {
+		b.WriteString(fmt.Sprintf("\n%d required tool(s) missing. Run: macaron --ins\n", missing))
+	} else {
+		b.WriteString("\nAll required tools are installed.\n")
+		b.WriteString("\nNext steps:\n")
+		b.WriteString("  macaron scan example.com\n")
+		b.WriteString("  macaron status\n")
+		b.WriteString("  macaron serve\n")
+	}
 	return b.String()
 }
 

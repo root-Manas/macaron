@@ -100,7 +100,7 @@ func run() int {
 	pflag.Parse()
 
 	if showVersion {
-		fmt.Printf("macaronV2 %s (Go %s, stable)\n", version, runtime.Version())
+		fmt.Printf("macaron %s (Go %s)\n", version, runtime.Version())
 		return 0
 	}
 	if guide {
@@ -170,7 +170,7 @@ func run() int {
 		return 0
 	}
 	if pipeline {
-		fmt.Printf("Pipeline (macaronV2 native): %s\n", filepath.Join(home, "pipeline.v2.yaml"))
+		fmt.Printf("Pipeline config path: %s\n", filepath.Join(home, "pipeline.v2.yaml"))
 		return 0
 	}
 	if listTools {
@@ -278,9 +278,17 @@ func run() int {
 		return 1
 	}
 	if !quiet {
-		fmt.Println("macaronV2 scan summary")
+		fmt.Println("scan summary")
 		fmt.Println(app.RenderScanSummary(res))
 		fmt.Printf("Completed %d target(s) in %s\n", len(res), time.Since(start).Round(time.Millisecond))
+		if len(res) > 0 {
+			tgt := res[0].Target
+			fmt.Printf("\nWhat next?\n")
+			fmt.Printf("  macaron status\n")
+			fmt.Printf("  macaron results --dom %s --wht live\n", tgt)
+			fmt.Printf("  macaron results --dom %s --wht vulns\n", tgt)
+			fmt.Printf("  macaron serve\n")
+		}
 	}
 	return 0
 }
