@@ -70,6 +70,39 @@ type ToolStatus struct {
 	Installed bool   `json:"installed"`
 }
 
+// DayStat holds aggregated scan findings for a single calendar day.
+type DayStat struct {
+	Day        string `json:"day"`
+	Scans      int    `json:"scans"`
+	Subdomains int    `json:"subdomains"`
+	LiveHosts  int    `json:"live_hosts"`
+	URLs       int    `json:"urls"`
+	Vulns      int    `json:"vulns"`
+}
+
+// TargetRank holds a target ranked by vuln and live host counts.
+type TargetRank struct {
+	Target    string `json:"target"`
+	Vulns     int    `json:"vulns"`
+	LiveHosts int    `json:"live_hosts"`
+}
+
+// SeverityCount holds a vulnerability severity level and its total count.
+type SeverityCount struct {
+	Severity string `json:"severity"`
+	Count    int    `json:"count"`
+}
+
+// AnalyticsReport is the response returned by /api/analytics.
+type AnalyticsReport struct {
+	ScanCount     int             `json:"scan_count"`
+	AvgDurationMS int64           `json:"avg_duration_ms"`
+	Totals        ScanStats       `json:"totals"`
+	Days          []DayStat       `json:"days"`
+	TopTargets    []TargetRank    `json:"top_targets"`
+	SeverityDist  []SeverityCount `json:"severity_dist"`
+}
+
 type StageEventType string
 
 const (

@@ -1,13 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -16,109 +16,101 @@ import (
 	"github.com/root-Manas/macaron/internal/cfg"
 	"github.com/root-Manas/macaron/internal/cliui"
 	"github.com/root-Manas/macaron/internal/model"
-	"github.com/root-Manas/macaron/internal/ui"
 	"github.com/spf13/pflag"
 )
 
-const version = "3.0.0"
+const version = "3.1.0"
 
 func main() {
 	os.Exit(run())
 }
 
 func run() int {
-	normalizeLegacyArgs()
-	normalizeCommandArgs()
-	normalizeCompactFlags()
-
-	var (
-		scanTargets  []string
-		status       bool
-		results      bool
-		listTools    bool
-		export       bool
-		configCmd    bool
-		pipeline     bool
-		serve        bool
-		filePath     string
-		useStdin     bool
-		domain       string
-		scanID       string
-		what         string
-		mode         string
-		fast         bool
-		narrow       bool
-		rate         int
-		threads      int
-		limit        int
-		output       string
-		quiet        bool
-		noColor      bool
-		showVersion  bool
-		serveAddr    string
-		storagePath  string
-		stages       string
-		setAPI       []string
-		showAPI      bool
-		setup        bool
-		installTools bool
-		profile      string
-		guide        bool
-	)
-
-	pflag.StringArrayVar(&scanTargets, "scn", nil, "Scan target(s)")
-	pflag.BoolVar(&status, "sts", false, "Show scan status")
-	pflag.BoolVar(&results, "res", false, "Show results")
-	pflag.BoolVar(&listTools, "lst", false, "List external tool availability")
-	pflag.BoolVar(&export, "exp", false, "Export results to JSON")
-	pflag.BoolVar(&configCmd, "cfg", false, "Show config paths")
-	pflag.BoolVar(&pipeline, "pip", false, "Show pipeline path (v2 native pipeline is built-in)")
-	pflag.BoolVar(&serve, "srv", false, "Start web dashboard server")
-
-	pflag.StringVar(&filePath, "fil", "", "Read targets from file")
-	pflag.BoolVar(&useStdin, "inp", false, "Read targets from stdin")
-	pflag.StringVar(&domain, "dom", "", "Filter by domain")
-	pflag.StringVar(&scanID, "sid", "", "Fetch specific scan ID")
-	pflag.StringVar(&what, "wht", "all", "Result view: all|subdomains|live|ports|urls|js|vulns")
-	pflag.StringVar(&mode, "mod", "wide", "Mode: wide|narrow|fast|deep|osint")
-	pflag.BoolVar(&fast, "fst", false, "Shortcut for mode fast")
-	pflag.BoolVar(&narrow, "nrw", false, "Shortcut for mode narrow")
-	pflag.IntVar(&rate, "rte", 150, "Request rate hint")
-	pflag.IntVar(&threads, "thr", 30, "Worker threads")
-	pflag.IntVar(&limit, "lim", 50, "Output limit")
-	pflag.StringVar(&output, "out", "", "Output file")
-	pflag.BoolVar(&quiet, "qut", false, "Quiet output (no banner, no progress)")
-	pflag.BoolVar(&noColor, "nc", false, "Disable color output")
-	pflag.BoolVar(&showVersion, "ver", false, "Show version")
-	pflag.StringVar(&serveAddr, "adr", "127.0.0.1:8088", "Dashboard bind address")
-	pflag.StringVar(&storagePath, "str", "", "Storage root directory (default: ./storage)")
-	pflag.StringVar(&stages, "stg", "all", "Comma-separated stages: subdomains,http,ports,urls,vulns")
-	pflag.StringArrayVar(&setAPI, "sak", nil, "Set API key as name=value (repeatable). Use empty value to unset.")
-	pflag.BoolVar(&showAPI, "shk", false, "Show configured API keys (masked)")
-	pflag.BoolVar(&setup, "stp", false, "Show setup screen with tool installation status")
-	pflag.BoolVar(&installTools, "ins", false, "Install missing supported tools (Linux)")
-	pflag.StringVar(&profile, "prf", "balanced", "Workflow profile: passive|balanced|aggressive")
-	pflag.BoolVar(&guide, "gud", false, "Show first-principles workflow guide")
-	pflag.Parse()
-
-	if noColor {
-		os.Setenv("NO_COLOR", "1")
-	}
-
-	if showVersion {
-		cliui.PrintBanner(version, false)
-		fmt.Printf("macaronV2 %s (Go %s, stable)\n", version, runtime.Version())
+	if len(os.Args) < 2 {
+		cliui.PrintBanner(os.Stderr, version, false)
+		printHelp()
 		return 0
 	}
-	if guide {
-		cliui.PrintBanner(version, quiet)
+
+	cmd := strings.ToLower(strings.TrimSpace(os.Args[1]))
+
+	switch cmd {
+	case "scan":
+		return runScan(os.Args[2:])
+	case "status":
+		return runStatus(os.Args[2:])
+	case "results":
+		return runResults(os.Args[2:])
+	case "setup":
+		return runSetup(os.Args[2:])
+	case "export":
+		return runExport(os.Args[2:])
+	case "config":
+		return runConfig(os.Args[2:])
+	case "api":
+		return runAPI(os.Args[2:])
+	case "uninstall":
+		return runUninstall(os.Args[2:])
+	case "guide":
 		printGuide()
 		return 0
+	case "version", "--version", "-version", "-v":
+		fmt.Printf("macaron %s\n", version)
+		return 0
+	case "help", "--help", "-help", "-h":
+		cliui.PrintBanner(os.Stderr, version, false)
+		printHelp()
+		return 0
+	default:
+		// Legacy compat: treat unknown first arg as a scan target if it looks like a domain.
+		if looksLikeDomain(cmd) {
+			return runScan(os.Args[1:])
+		}
+		cliui.Err("unknown command: %s  (run 'macaron help')", cmd)
+		return 1
+	}
+}
+
+// ─── scan ────────────────────────────────────────────────────────────────────
+
+func runScan(args []string) int {
+	fs := pflag.NewFlagSet("scan", pflag.ContinueOnError)
+	var (
+		targets []string
+		file    string
+		stdin   bool
+		mode    string
+		rate    int
+		threads int
+		stages  string
+		profile string
+		quiet   bool
+		storage string
+	)
+	fs.StringArrayVarP(&targets, "target", "t", nil, "Target domain(s) (repeatable)")
+	fs.StringVarP(&file, "file", "f", "", "Read targets from file (one per line)")
+	fs.BoolVar(&stdin, "stdin", false, "Read targets from stdin")
+	fs.StringVarP(&mode, "mode", "m", "wide", "Scan mode: wide|narrow|fast|deep|osint")
+	fs.IntVar(&rate, "rate", 150, "Request rate hint")
+	fs.IntVar(&threads, "threads", 30, "Concurrent workers")
+	fs.StringVar(&stages, "stages", "all", "Comma-separated stages: subdomains,http,ports,urls,vulns")
+	fs.StringVarP(&profile, "profile", "p", "balanced", "Workflow profile: passive|balanced|aggressive")
+	fs.BoolVarP(&quiet, "quiet", "q", false, "Suppress progress output")
+	fs.StringVar(&storage, "storage", "", "Storage root (default: ./storage)")
+	_ = fs.Parse(args)
+
+	// Positional args are also targets.
+	for _, a := range fs.Args() {
+		targets = append(targets, a)
 	}
 
-	home, err := macaronHome(storagePath)
+	if !quiet {
+		cliui.PrintBanner(os.Stderr, version, false)
+	}
+
+	home, err := macaronHome(storage)
 	if err != nil {
-		cliui.Err("storage: %v", err)
+		cliui.Err("%v", err)
 		return 1
 	}
 	application, err := app.New(home)
@@ -131,141 +123,25 @@ func run() int {
 		cliui.Err("loading config: %v", err)
 		return 1
 	}
-	if len(setAPI) > 0 {
-		cfg.ApplySetAPI(config, setAPI)
-		if err := cfg.Save(home, config); err != nil {
-			cliui.Err("saving config: %v", err)
-			return 1
-		}
-		cliui.OK("API keys saved → %s", filepath.Join(home, "config.yaml"))
-		return 0
-	}
-	if showAPI {
-		items := cfg.MaskedKeys(config)
-		if len(items) == 0 {
-			cliui.Info("No API keys configured")
-			return 0
-		}
-		cliui.Info("Configured API keys:")
-		for _, item := range items {
-			fmt.Printf("  %s %s\n", cliui.CyanText("•"), item)
-		}
-		return 0
-	}
-	if setup || installTools {
-		cliui.PrintBanner(version, quiet)
-		tools := app.SetupCatalog()
-		fmt.Print(app.RenderSetup(tools))
-		if installTools {
-			cliui.Info("Installing missing tools…")
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-			defer cancel()
-			installed, err := app.InstallMissingTools(ctx, tools)
-			if err != nil {
-				cliui.Err("setup: %v", err)
-				return 1
-			}
-			if len(installed) == 0 {
-				cliui.Info("No installable missing tools found.")
-			} else {
-				cliui.OK("Installed: %s", strings.Join(installed, ", "))
-			}
-			fmt.Print(app.RenderSetup(app.SetupCatalog()))
-		}
-		return 0
-	}
 
-	if configCmd {
-		fmt.Print(application.ShowConfig())
-		return 0
-	}
-	if pipeline {
-		cliui.Info("Pipeline (macaronV2 native): %s", filepath.Join(home, "pipeline.v2.yaml"))
-		return 0
-	}
-	if listTools {
-		cliui.PrintBanner(version, quiet)
-		for _, t := range app.ListTools() {
-			if t.Installed {
-				fmt.Printf("  %s %-14s %s\n", cliui.GreenText("✔"), t.Name, cliui.Muted("installed"))
-			} else {
-				fmt.Printf("  %s %-14s %s\n", cliui.YellowText("✘"), t.Name, cliui.Muted("missing"))
-			}
-		}
-		return 0
-	}
-	if status {
-		cliui.PrintBanner(version, quiet)
-		out, err := application.ShowStatus(limit)
-		if err != nil {
-			cliui.Err("%v", err)
-			return 1
-		}
-		fmt.Print(out)
-		return 0
-	}
-	if results {
-		out, err := application.ShowResults(domain, scanID, what, limit)
-		if err != nil {
-			cliui.Err("%v", err)
-			return 1
-		}
-		fmt.Print(out)
-		return 0
-	}
-	if export {
-		path, err := application.Export(output, domain)
-		if err != nil {
-			cliui.Err("%v", err)
-			return 1
-		}
-		cliui.OK("Exported → %s", path)
-		return 0
-	}
-	if serve {
-		cliui.PrintBanner(version, quiet)
-		cliui.Info("Starting dashboard on http://%s", serveAddr)
-		server := ui.New(application.Store)
-		if err := server.Serve(serveAddr); err != nil {
-			cliui.Err("%v", err)
-			return 1
-		}
-		return 0
-	}
-
-	targets, err := app.ParseTargets(scanTargets, filePath, useStdin)
+	allTargets, err := app.ParseTargets(targets, file, stdin)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		cliui.Err("%v", err)
 		return 1
 	}
-	if len(targets) == 0 {
-		printHelp()
-		return 0
-	}
-	applyProfile(profile, &mode, &rate, &threads, &stages)
-	if fast {
-		mode = "fast"
-	}
-	if narrow {
-		mode = "narrow"
-	}
-	if rate <= 0 {
-		cliui.Err("--rte (rate) must be > 0")
-		return 1
-	}
-	if threads <= 0 {
-		cliui.Err("--thr (threads) must be > 0")
+	if len(allTargets) == 0 {
+		cliui.Err("no targets provided — use -t <domain> or pass positional args")
 		return 1
 	}
 
-	cliui.PrintBanner(version, quiet)
-	if !quiet {
-		cliui.Info("Profile: %s | mode: %s | stages: %s | rate: %d | threads: %d",
-			cliui.Highlight(profile), cliui.Highlight(mode),
-			cliui.Highlight(stages), rate, threads)
-		for _, t := range targets {
-			cliui.Info("Target: %s", cliui.Highlight(t))
-		}
+	applyProfile(profile, &mode, &rate, &threads, &stages)
+	if rate <= 0 {
+		cliui.Err("--rate must be > 0")
+		return 1
+	}
+	if threads <= 0 {
+		cliui.Err("--threads must be > 0")
+		return 1
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -277,9 +153,11 @@ func run() int {
 	if !quiet {
 		renderer = cliui.NewLiveRenderer(os.Stdout)
 		defer renderer.Close()
+		cliui.Info("profile=%s mode=%s stages=%s rate=%d threads=%d targets=%d",
+			profile, mode, stages, rate, threads, len(allTargets))
 	}
 	res, err := application.Scan(ctx, app.ScanArgs{
-		Targets:       targets,
+		Targets:       allTargets,
 		Mode:          modeVal,
 		Rate:          rate,
 		Threads:       threads,
@@ -297,192 +175,492 @@ func run() int {
 		return 1
 	}
 	if !quiet {
-		elapsed := time.Since(start).Round(time.Millisecond)
-		cliui.OK("Completed %d target(s) in %s", len(res), elapsed)
-		fmt.Println()
 		fmt.Println(app.RenderScanSummary(res))
+		cliui.OK("finished %d target(s) in %s", len(res), time.Since(start).Round(time.Millisecond))
 	}
 	return 0
 }
 
+// ─── status ──────────────────────────────────────────────────────────────────
+
+func runStatus(args []string) int {
+	fs := pflag.NewFlagSet("status", pflag.ContinueOnError)
+	var limit int
+	var storage string
+	fs.IntVarP(&limit, "limit", "n", 50, "Number of recent scans to show")
+	fs.StringVar(&storage, "storage", "", "Storage root")
+	_ = fs.Parse(args)
+
+	home, err := macaronHome(storage)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	application, err := app.New(home)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	out, err := application.ShowStatus(limit)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	fmt.Print(out)
+	return 0
+}
+
+// ─── results ─────────────────────────────────────────────────────────────────
+
+func runResults(args []string) int {
+	fs := pflag.NewFlagSet("results", pflag.ContinueOnError)
+	var (
+		domain  string
+		id      string
+		what    string
+		limit   int
+		storage string
+	)
+	fs.StringVarP(&domain, "domain", "d", "", "Filter by target domain")
+	fs.StringVar(&id, "id", "", "Fetch specific scan by ID")
+	fs.StringVarP(&what, "what", "w", "all", "View: all|subdomains|live|ports|urls|js|vulns")
+	fs.IntVarP(&limit, "limit", "n", 50, "Output limit per category")
+	fs.StringVar(&storage, "storage", "", "Storage root")
+	_ = fs.Parse(args)
+
+	home, err := macaronHome(storage)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	application, err := app.New(home)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	out, err := application.ShowResults(domain, id, what, limit)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	fmt.Print(out)
+	return 0
+}
+
+// ─── setup ───────────────────────────────────────────────────────────────────
+
+func runSetup(args []string) int {
+	fs := pflag.NewFlagSet("setup", pflag.ContinueOnError)
+	var install bool
+	fs.BoolVarP(&install, "install", "i", false, "Auto-install missing tools that support it")
+	_ = fs.Parse(args)
+
+	tools := app.SetupCatalog()
+	fmt.Print(app.RenderSetup(tools))
+
+	if install {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		installed, err := app.InstallMissingTools(ctx, tools)
+		if err != nil {
+			cliui.Err("install error: %v", err)
+			return 1
+		}
+		if len(installed) == 0 {
+			cliui.Info("no installable tools were missing")
+		} else {
+			cliui.OK("installed: %s", strings.Join(installed, ", "))
+		}
+		fmt.Print(app.RenderSetup(app.SetupCatalog()))
+	}
+	return 0
+}
+
+// ─── export ──────────────────────────────────────────────────────────────────
+
+func runExport(args []string) int {
+	fs := pflag.NewFlagSet("export", pflag.ContinueOnError)
+	var output, domain, storage string
+	fs.StringVarP(&output, "output", "o", "", "Output file path")
+	fs.StringVarP(&domain, "domain", "d", "", "Filter by domain")
+	fs.StringVar(&storage, "storage", "", "Storage root")
+	_ = fs.Parse(args)
+
+	home, err := macaronHome(storage)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	application, err := app.New(home)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	path, err := application.Export(output, domain)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	cliui.OK("exported → %s", path)
+	return 0
+}
+
+// ─── config ──────────────────────────────────────────────────────────────────
+
+func runConfig(args []string) int {
+	fs := pflag.NewFlagSet("config", pflag.ContinueOnError)
+	var storage string
+	fs.StringVar(&storage, "storage", "", "Storage root")
+	_ = fs.Parse(args)
+
+	home, err := macaronHome(storage)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	application, err := app.New(home)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	fmt.Print(application.ShowConfig())
+	return 0
+}
+
+// ─── api ─────────────────────────────────────────────────────────────────────
+
+func runAPI(args []string) int {
+	if len(args) == 0 {
+		printAPIHelp()
+		return 0
+	}
+	sub := strings.ToLower(strings.TrimSpace(args[0]))
+	rest := args[1:]
+	switch sub {
+	case "list":
+		return apiList(rest)
+	case "set":
+		return apiSet(rest)
+	case "unset":
+		return apiUnset(rest)
+	case "import":
+		return apiImport(rest)
+	case "bulk":
+		return apiBulk(rest)
+	default:
+		cliui.Err("unknown api subcommand: %s  (list|set|unset|import|bulk)", sub)
+		return 1
+	}
+}
+
+func apiList(args []string) int {
+	fs := pflag.NewFlagSet("api list", pflag.ContinueOnError)
+	var storage string
+	fs.StringVar(&storage, "storage", "", "Storage root")
+	_ = fs.Parse(args)
+
+	home, err := macaronHome(storage)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	config, err := cfg.Load(home)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	items := cfg.MaskedKeys(config)
+	if len(items) == 0 {
+		cliui.Info("no API keys configured — use 'macaron api set key=value'")
+		return 0
+	}
+	fmt.Printf("configured API keys (%s):\n", filepath.Join(home, "config.yaml"))
+	for _, item := range items {
+		fmt.Printf("  %s\n", item)
+	}
+	return 0
+}
+
+func apiSet(args []string) int {
+	fs := pflag.NewFlagSet("api set", pflag.ContinueOnError)
+	var storage string
+	fs.StringVar(&storage, "storage", "", "Storage root")
+	_ = fs.Parse(args)
+
+	kvs := fs.Args()
+	if len(kvs) == 0 {
+		cliui.Err("usage: macaron api set key=value [key=value ...]")
+		return 1
+	}
+	home, err := macaronHome(storage)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	config, err := cfg.Load(home)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	cfg.ApplySetAPI(config, kvs)
+	if err := cfg.Save(home, config); err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	cliui.OK("saved %d key(s) → %s", len(kvs), filepath.Join(home, "config.yaml"))
+	return 0
+}
+
+func apiUnset(args []string) int {
+	// Reuse set with empty value to delete.
+	if len(args) == 0 {
+		cliui.Err("usage: macaron api unset key [key ...]")
+		return 1
+	}
+	// Append "=" to each key so ApplySetAPI treats it as a deletion.
+	kvs := make([]string, len(args))
+	for i, k := range args {
+		kvs[i] = strings.TrimSuffix(k, "=") + "="
+	}
+	return apiSet(kvs)
+}
+
+func apiImport(args []string) int {
+	fs := pflag.NewFlagSet("api import", pflag.ContinueOnError)
+	var storage string
+	fs.StringVar(&storage, "storage", "", "Storage root")
+	_ = fs.Parse(args)
+
+	home, err := macaronHome(storage)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	config, err := cfg.Load(home)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	imported := cfg.ImportFromTools(config)
+	if len(imported) == 0 {
+		cliui.Info("no new keys found in installed tool configs")
+		return 0
+	}
+	if err := cfg.Save(home, config); err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	for _, line := range imported {
+		cliui.OK("imported: %s", line)
+	}
+	return 0
+}
+
+func apiBulk(args []string) int {
+	fs := pflag.NewFlagSet("api bulk", pflag.ContinueOnError)
+	var file, storage string
+	fs.StringVarP(&file, "file", "f", "", "YAML file with api_keys map (required)")
+	fs.StringVar(&storage, "storage", "", "Storage root")
+	_ = fs.Parse(args)
+
+	if file == "" && len(fs.Args()) > 0 {
+		file = fs.Args()[0]
+	}
+	if file == "" {
+		cliui.Err("usage: macaron api bulk --file keys.yaml")
+		return 1
+	}
+	home, err := macaronHome(storage)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	config, err := cfg.Load(home)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	count, err := cfg.BulkLoadFile(config, file)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	if err := cfg.Save(home, config); err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	cliui.OK("loaded %d key(s) from %s", count, file)
+	return 0
+}
+
+// ─── uninstall ───────────────────────────────────────────────────────────────
+
+func runUninstall(args []string) int {
+	fs := pflag.NewFlagSet("uninstall", pflag.ContinueOnError)
+	var storage string
+	var yes bool
+	fs.StringVar(&storage, "storage", "", "Storage root to also remove (optional)")
+	fs.BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompt")
+	_ = fs.Parse(args)
+
+	execPath, err := os.Executable()
+	if err != nil {
+		cliui.Err("cannot locate binary: %v", err)
+		return 1
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		cliui.Err("cannot resolve symlink: %v", err)
+		return 1
+	}
+
+	fmt.Printf("binary path  : %s\n", execPath)
+
+	home, _ := macaronHome(storage)
+	removeStorage := false
+
+	if !yes {
+		fmt.Printf("remove binary %s? [y/N] ", execPath)
+		if !readYes() {
+			fmt.Println("aborted")
+			return 0
+		}
+		if home != "" {
+			fmt.Printf("remove storage directory %s? [y/N] ", home)
+			removeStorage = readYes()
+		}
+	} else {
+		removeStorage = storage != ""
+	}
+
+	if err := os.Remove(execPath); err != nil {
+		cliui.Err("failed to remove binary: %v", err)
+		return 1
+	}
+	cliui.OK("removed binary: %s", execPath)
+
+	if removeStorage && home != "" {
+		if err := os.RemoveAll(home); err != nil {
+			cliui.Warn("could not remove storage: %v", err)
+		} else {
+			cliui.OK("removed storage: %s", home)
+		}
+	}
+
+	fmt.Println("macaron uninstalled")
+	return 0
+}
+
+func readYes() bool {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	return strings.ToLower(strings.TrimSpace(scanner.Text())) == "y"
+}
+
+// ─── help ────────────────────────────────────────────────────────────────────
+
 func printHelp() {
-	c := cliui.CyanText
-	b := cliui.Highlight
-	m := cliui.Muted
+	fmt.Print(`usage:
+  macaron <command> [flags]
 
-	cliui.PrintBanner(version, false)
-	fmt.Printf("%s\n", b("USAGE"))
-	fmt.Printf("  macaron %s example.com\n", c("scan"))
-	fmt.Printf("  macaron %s\n", c("status"))
-	fmt.Printf("  macaron %s -dom example.com -wht live\n", c("results"))
-	fmt.Printf("  macaron %s -adr 127.0.0.1:8088\n", c("serve"))
-	fmt.Printf("  macaron %s\n", c("setup"))
-	fmt.Printf("  macaron %s -out results.json\n\n", c("export"))
+commands:
+  scan       run a recon pipeline against one or more targets
+  status     show scan history
+  results    inspect scan output
+  setup      check / install required tools
+  export     dump results to JSON
+  config     show storage and config paths
+  api        manage global API keys
+  uninstall  remove macaron from this system
+  guide      first-principles workflow walkthrough
+  version    print version
 
-	fmt.Printf("%s\n", b("SCAN FLAGS"))
-	fmt.Printf("  %s TARGET   %s\n", c("-scn"), m("Scan one or more targets (repeatable)"))
-	fmt.Printf("  %s FILE     %s\n", c("-fil"), m("Read targets from file"))
-	fmt.Printf("  %s          %s\n", c("-inp"), m("Read targets from stdin"))
-	fmt.Printf("  %s MODE     %s\n", c("-mod"), m("Scan mode: wide|narrow|fast|deep|osint"))
-	fmt.Printf("  %s LIST     %s\n", c("-stg"), m("Stages: subdomains,http,ports,urls,vulns"))
-	fmt.Printf("  %s NAME     %s\n", c("-prf"), m("Profile: passive|balanced|aggressive"))
-	fmt.Printf("  %s N        %s\n", c("-rte"), m("Request rate hint (default: 150)"))
-	fmt.Printf("  %s N        %s\n\n", c("-thr"), m("Worker threads (default: 30)"))
+scan flags:
+  -t, --target DOMAIN    target domain (repeatable)
+  -f, --file FILE        read targets from file
+      --stdin            read targets from stdin
+  -m, --mode MODE        wide|narrow|fast|deep|osint  (default: wide)
+  -p, --profile NAME     passive|balanced|aggressive  (default: balanced)
+      --stages LIST      subdomains,http,ports,urls,vulns  (default: all)
+      --rate N           request rate hint  (default: 150)
+      --threads N        workers  (default: 30)
+  -q, --quiet            suppress progress output
+      --storage DIR      custom storage root
 
-	fmt.Printf("%s\n", b("OUTPUT FLAGS"))
-	fmt.Printf("  %s          %s\n", c("-sts"), m("Show recent scan summaries"))
-	fmt.Printf("  %s          %s\n", c("-res"), m("Show scan results"))
-	fmt.Printf("  %s DOMAIN   %s\n", c("-dom"), m("Filter by domain"))
-	fmt.Printf("  %s ID       %s\n", c("-sid"), m("Fetch specific scan ID"))
-	fmt.Printf("  %s TYPE     %s\n", c("-wht"), m("Result view: all|subdomains|live|ports|urls|js|vulns"))
-	fmt.Printf("  %s N        %s\n", c("-lim"), m("Output limit (default: 50)"))
-	fmt.Printf("  %s FILE     %s\n", c("-out"), m("Output file for export"))
-	fmt.Printf("  %s          %s\n", c("-exp"), m("Export results to JSON"))
-	fmt.Printf("  %s          %s\n\n", c("-qut"), m("Quiet mode (suppress banner and progress)"))
+api subcommands:
+  macaron api list
+  macaron api set key=value [key=value ...]
+  macaron api unset key [key ...]
+  macaron api import            # pull keys from installed tool configs
+  macaron api bulk -f keys.yaml # load many keys from a YAML file
 
-	fmt.Printf("%s\n", b("API KEYS"))
-	fmt.Printf("  %s k=v      %s\n", c("-sak"), m("Set API key (e.g. -sak securitytrails=KEY)"))
-	fmt.Printf("  %s          %s\n\n", c("-shk"), m("Show masked API keys"))
-
-	fmt.Printf("%s\n", b("DASHBOARD"))
-	fmt.Printf("  %s          %s\n", c("-srv"), m("Start browser dashboard"))
-	fmt.Printf("  %s ADDR     %s\n\n", c("-adr"), m("Bind address (default: 127.0.0.1:8088)"))
-
-	fmt.Printf("%s\n", b("TOOLS & CONFIG"))
-	fmt.Printf("  %s          %s\n", c("-stp"), m("Show tool installation status"))
-	fmt.Printf("  %s          %s\n", c("-ins"), m("Install missing supported tools (Linux)"))
-	fmt.Printf("  %s          %s\n", c("-lst"), m("List external tool availability"))
-	fmt.Printf("  %s DIR      %s\n", c("-str"), m("Custom storage root (default: ./storage)"))
-	fmt.Printf("  %s          %s\n", c("-cfg"), m("Show config paths"))
-	fmt.Printf("  %s          %s\n", c("-gud"), m("Show first-principles workflow guide"))
-	fmt.Printf("  %s          %s\n", c("-nc"),  m("Disable color output"))
-	fmt.Printf("  %s          %s\n\n", c("-ver"), m("Show version"))
-
-	fmt.Printf("%s\n", b("EXAMPLES"))
-	fmt.Printf("  %s\n", m("# Passive OSINT scan"))
-	fmt.Printf("  macaron scan example.com %s passive\n\n", c("-prf"))
-	fmt.Printf("  %s\n", m("# Aggressive full scan"))
-	fmt.Printf("  macaron scan example.com %s aggressive %s subdomains,http,ports,urls,vulns\n\n", c("-prf"), c("-stg"))
-	fmt.Printf("  %s\n", m("# View live hosts from last scan"))
-	fmt.Printf("  macaron results %s example.com %s live\n\n", c("-dom"), c("-wht"))
-	fmt.Printf("  %s\n", m("# Use API key for better coverage"))
-	fmt.Printf("  macaron %s securitytrails=YOUR_KEY\n\n", c("-sak"))
+examples:
+  macaron scan -t example.com
+  macaron scan -t example.com -p aggressive --stages subdomains,http,vulns
+  macaron scan -f targets.txt -p passive -q
+  macaron status
+  macaron results -d example.com -w vulns
+  macaron api set securitytrails=YOURKEY shodan=YOURKEY
+  macaron api import
+  macaron setup --install
+  macaron uninstall
+`)
 }
 
-func normalizeLegacyArgs() {
-	for i, arg := range os.Args {
-		if arg == "-setup" {
-			os.Args[i] = "-stp"
-		}
-		if arg == "-install-tools" {
-			os.Args[i] = "-ins"
-		}
-	}
+func printAPIHelp() {
+	fmt.Print(`macaron api — global API key management
+
+subcommands:
+  list                  show configured keys (masked)
+  set key=value ...     set one or more keys
+  unset key ...         remove key(s)
+  import                import from installed tool configs (subfinder, amass…)
+  bulk -f keys.yaml     load many keys at once from a YAML file
+
+the bulk file format:
+  api_keys:
+    securitytrails: YOUR_KEY
+    shodan: YOUR_KEY
+    virustotal: YOUR_KEY
+
+keys set here are automatically injected into supported tools (e.g. subfinder)
+when macaron runs them, without touching your tool-specific configs.
+`)
 }
 
-func normalizeCommandArgs() {
-	if len(os.Args) < 2 {
-		return
-	}
-	cmd := strings.ToLower(strings.TrimSpace(os.Args[1]))
-	rest := os.Args[2:]
-	switch cmd {
-	case "scan":
-		args := []string{os.Args[0]}
-		for _, tok := range rest {
-			if strings.HasPrefix(tok, "-") {
-				args = append(args, tok)
-				continue
-			}
-			args = append(args, "--scn", tok)
-		}
-		if len(args) == 1 {
-			args = append(args, "--scn")
-		}
-		os.Args = args
-	case "status":
-		os.Args = append([]string{os.Args[0], "--sts"}, rest...)
-	case "results":
-		os.Args = append([]string{os.Args[0], "--res"}, rest...)
-	case "serve":
-		os.Args = append([]string{os.Args[0], "--srv"}, rest...)
-	case "setup":
-		os.Args = append([]string{os.Args[0], "--stp"}, rest...)
-	case "export":
-		os.Args = append([]string{os.Args[0], "--exp"}, rest...)
-	case "config":
-		os.Args = append([]string{os.Args[0], "--cfg"}, rest...)
-	case "guide":
-		os.Args = append([]string{os.Args[0], "--gud"}, rest...)
-	}
+func printGuide() {
+	fmt.Print(`macaron — first-principles workflow
+
+1. provision once:
+   macaron setup --install
+   macaron api set securitytrails=KEY shodan=KEY virustotal=KEY
+   # or pull keys already in your tools:
+   macaron api import
+
+2. enumerate with intent:
+   macaron scan -t target.com -p passive        # low-noise, passive only
+   macaron scan -t target.com -p balanced       # default practical pipeline
+   macaron scan -t target.com -p aggressive \
+     --stages subdomains,http,ports,urls,vulns  # full depth
+
+3. triage:
+   macaron status
+   macaron results -d target.com -w live
+   macaron results -d target.com -w vulns
+
+4. share:
+   macaron export -o target.json
+
+profiles:
+  passive     osint-only, low rate, no active probing
+  balanced    default — enumeration + probing + vuln scan
+  aggressive  max concurrency, all stages, authorized testing only
+
+authorized use only.
+`)
 }
 
-func normalizeCompactFlags() {
-	flagMap := map[string]string{
-		"scan": "scn", "s": "scn", "scn": "scn",
-		"status": "sts", "S": "sts", "sts": "sts",
-		"results": "res", "R": "res", "res": "res",
-		"list-tools": "lst", "L": "lst", "lst": "lst",
-		"export": "exp", "E": "exp", "exp": "exp",
-		"config": "cfg", "C": "cfg", "cfg": "cfg",
-		"pipeline": "pip", "P": "pip", "pip": "pip",
-		"serve": "srv", "srv": "srv",
-		"file": "fil", "F": "fil", "fil": "fil",
-		"stdin": "inp", "inp": "inp",
-		"domain": "dom", "d": "dom", "dom": "dom",
-		"id": "sid", "sid": "sid",
-		"what": "wht", "w": "wht", "wht": "wht",
-		"mode": "mod", "m": "mod", "mod": "mod",
-		"fast": "fst", "f": "fst", "fst": "fst",
-		"narrow": "nrw", "n": "nrw", "nrw": "nrw",
-		"rate": "rte", "rte": "rte",
-		"threads": "thr", "thr": "thr",
-		"limit": "lim", "lim": "lim",
-		"output": "out", "o": "out", "out": "out",
-		"quiet": "qut", "q": "qut", "qut": "qut",
-		"no-color": "nc", "nc": "nc",
-		"version": "ver", "ver": "ver",
-		"addr": "adr", "adr": "adr",
-		"storage": "str", "str": "str",
-		"stages": "stg", "stg": "stg",
-		"set-api": "sak", "sak": "sak",
-		"show-api": "shk", "shk": "shk",
-		"setup": "stp", "stp": "stp",
-		"install-tools": "ins", "ins": "ins",
-		"profile": "prf", "prf": "prf",
-		"guide": "gud", "gud": "gud",
-	}
-	args := make([]string, 0, len(os.Args))
-	args = append(args, os.Args[0])
-	for _, arg := range os.Args[1:] {
-		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && len(arg) > 2 {
-			key := strings.TrimPrefix(arg, "-")
-			val := ""
-			if i := strings.IndexRune(key, '='); i >= 0 {
-				val = key[i:]
-				key = key[:i]
-			}
-			if mapped, ok := flagMap[key]; ok {
-				args = append(args, "--"+mapped+val)
-				continue
-			}
-		}
-		if strings.HasPrefix(arg, "--") {
-			key := strings.TrimPrefix(arg, "--")
-			val := ""
-			if i := strings.IndexRune(key, '='); i >= 0 {
-				val = key[i:]
-				key = key[:i]
-			}
-			if mapped, ok := flagMap[key]; ok {
-				args = append(args, "--"+mapped+val)
-				continue
-			}
-		}
-		args = append(args, arg)
-	}
-	os.Args = args
-}
+// ─── helpers ─────────────────────────────────────────────────────────────────
 
 func applyProfile(profile string, mode *string, rate *int, threads *int, stages *string) {
 	switch strings.ToLower(strings.TrimSpace(profile)) {
@@ -506,41 +684,7 @@ func applyProfile(profile string, mode *string, rate *int, threads *int, stages 
 		if *threads == 30 {
 			*threads = 70
 		}
-	default:
-		// balanced defaults are already encoded in flags.
 	}
-}
-
-func printGuide() {
-	b := cliui.Highlight
-	c := cliui.CyanText
-	m := cliui.Muted
-	g := cliui.GreenText
-
-	fmt.Printf("%s\n\n", b("WORKFLOW GUIDE — first principles"))
-
-	fmt.Printf("%s  %s\n", g("1)"), b("Setup once"))
-	fmt.Printf("   macaron %s\n", c("setup"))
-	fmt.Printf("   macaron %s\n", c("-ins"))
-	fmt.Printf("   macaron %s securitytrails=YOUR_KEY\n\n", c("-sak"))
-
-	fmt.Printf("%s  %s\n", g("2)"), b("Run intentional scans"))
-	fmt.Printf("   macaron scan target.com %s passive\n", c("-prf"))
-	fmt.Printf("   macaron scan target.com %s balanced\n", c("-prf"))
-	fmt.Printf("   macaron scan target.com %s aggressive %s subdomains,http,ports,urls,vulns\n\n", c("-prf"), c("-stg"))
-
-	fmt.Printf("%s  %s\n", g("3)"), b("Inspect and decide"))
-	fmt.Printf("   macaron %s\n", c("status"))
-	fmt.Printf("   macaron %s %s target.com %s live\n", c("results"), c("-dom"), c("-wht"))
-	fmt.Printf("   macaron %s\n\n", c("serve"))
-
-	fmt.Printf("%s  %s\n", g("4)"), b("Export / share"))
-	fmt.Printf("   macaron %s %s target.json\n\n", c("export"), c("-out"))
-
-	fmt.Printf("%s\n", b("PROFILES"))
-	fmt.Printf("  %s   %s\n", c("passive"),    m("low-noise, low-rate, mostly passive collection"))
-	fmt.Printf("  %s  %s\n", c("balanced"),   m("default practical pipeline"))
-	fmt.Printf("  %s %s\n\n", c("aggressive"), m("high concurrency for authorized deep testing only"))
 }
 
 func macaronHome(override string) (string, error) {
@@ -552,4 +696,25 @@ func macaronHome(override string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(cwd, "storage"), nil
+}
+
+func looksLikeDomain(s string) bool {
+	if strings.HasPrefix(s, "-") || strings.Contains(s, " ") {
+		return false
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	tld := strings.ToLower(parts[len(parts)-1])
+	// TLD must be alphabetic-only and at least 2 characters.
+	if len(tld) < 2 {
+		return false
+	}
+	for _, c := range tld {
+		if c < 'a' || c > 'z' {
+			return false
+		}
+	}
+	return true
 }

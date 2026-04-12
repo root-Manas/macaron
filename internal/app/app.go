@@ -16,13 +16,18 @@ import (
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/root-Manas/macaron/internal/engine"
 	"github.com/root-Manas/macaron/internal/model"
 	"github.com/root-Manas/macaron/internal/store"
 )
 
-var toolNames = []string{"subfinder", "assetfinder", "findomain", "nuclei"}
+var toolNames = []string{
+	"subfinder", "assetfinder", "findomain", "amass",
+	"nuclei", "httpx", "dnsx", "naabu",
+	"gau", "waybackurls", "katana",
+	"ffuf", "gobuster", "feroxbuster",
+	"gospider", "hakrawler",
+}
 
 type SetupTool struct {
 	Name          string
@@ -90,28 +95,20 @@ func (a *App) ShowStatus(limit int) (string, error) {
 		return "", err
 	}
 	if len(summaries) == 0 {
-		return "No scans found. Run: macaron scan example.com\n", nil
+		return "no scans on record. run: macaron scan <target>", nil
 	}
 	b := strings.Builder{}
+	b.WriteString("scan history\n")
 	tw := table.NewWriter()
-	tw.SetStyle(tableStyle())
 	tw.AppendHeader(table.Row{"ID", "TARGET", "MODE", "LIVE", "URLS", "VULNS", "FINISHED"})
 	for _, s := range summaries {
-		vulnCell := strconv.Itoa(s.Stats.Vulns)
-		if s.Stats.Vulns > 0 {
-			vulnCell = text.Colors{text.FgRed, text.Bold}.Sprint(vulnCell)
-		}
-		liveCell := strconv.Itoa(s.Stats.LiveHosts)
-		if s.Stats.LiveHosts > 0 {
-			liveCell = text.Colors{text.FgGreen}.Sprint(liveCell)
-		}
 		tw.AppendRow(table.Row{
-			text.Colors{text.FgCyan}.Sprint(s.ID),
-			text.Colors{text.Bold}.Sprint(s.Target),
+			s.ID,
+			s.Target,
 			s.Mode,
-			liveCell,
+			strconv.Itoa(s.Stats.LiveHosts),
 			strconv.Itoa(s.Stats.URLs),
-			vulnCell,
+			strconv.Itoa(s.Stats.Vulns),
 			s.FinishedAt.Format(time.RFC3339),
 		})
 	}
@@ -246,16 +243,30 @@ func ListTools() []model.ToolStatus {
 
 func SetupCatalog() []SetupTool {
 	tools := []SetupTool{
+		// Subdomain enumeration
 		{Name: "subfinder", Binary: "subfinder", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"},
 		{Name: "assetfinder", Binary: "assetfinder", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/tomnomnom/assetfinder@latest"},
-		{Name: "findomain", Binary: "findomain", Required: false, InstallMethod: "manual", InstallCmd: "apt install findomain OR download release binary"},
-		{Name: "nuclei", Binary: "nuclei", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"},
+		{Name: "findomain", Binary: "findomain", Required: false, InstallMethod: "manual", InstallCmd: "https://github.com/Findomain/Findomain/releases"},
+		{Name: "amass", Binary: "amass", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/owasp-amass/amass/v4/...@master"},
+		// HTTP probing & tech detection
 		{Name: "httpx", Binary: "httpx", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/httpx/cmd/httpx@latest"},
+		// DNS resolution & brute
 		{Name: "dnsx", Binary: "dnsx", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest"},
+		// Port scanning
 		{Name: "naabu", Binary: "naabu", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"},
+		// URL discovery (passive)
 		{Name: "gau", Binary: "gau", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/lc/gau/v2/cmd/gau@latest"},
 		{Name: "waybackurls", Binary: "waybackurls", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/tomnomnom/waybackurls@latest"},
+		// Active crawling
 		{Name: "katana", Binary: "katana", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/katana/cmd/katana@latest"},
+		{Name: "gospider", Binary: "gospider", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/jaeles-project/gospider@latest"},
+		{Name: "hakrawler", Binary: "hakrawler", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/hakluke/hakrawler@latest"},
+		// Content discovery / fuzzing
+		{Name: "ffuf", Binary: "ffuf", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/ffuf/ffuf/v2@latest"},
+		{Name: "gobuster", Binary: "gobuster", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/OJ/gobuster/v3@latest"},
+		{Name: "feroxbuster", Binary: "feroxbuster", Required: false, InstallMethod: "manual", InstallCmd: "https://github.com/epi052/feroxbuster/releases"},
+		// Vulnerability scanning
+		{Name: "nuclei", Binary: "nuclei", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"},
 	}
 	for i := range tools {
 		_, err := execLookPath(tools[i].Binary)
@@ -266,28 +277,40 @@ func SetupCatalog() []SetupTool {
 
 func RenderSetup(tools []SetupTool) string {
 	tw := table.NewWriter()
-	tw.SetStyle(tableStyle())
-	tw.AppendHeader(table.Row{"TOOL", "REQUIRED", "STATUS", "INSTALL"})
+	tw.AppendHeader(table.Row{"TOOL", "ROLE", "REQUIRED", "STATUS", "INSTALL"})
+
+	roleMap := map[string]string{
+		"subfinder":   "subdomain enum",
+		"assetfinder": "subdomain enum",
+		"findomain":   "subdomain enum",
+		"amass":       "subdomain enum",
+		"httpx":       "http probe",
+		"dnsx":        "dns resolve",
+		"naabu":       "port scan",
+		"gau":         "url discovery",
+		"waybackurls": "url discovery",
+		"katana":      "active crawl",
+		"gospider":    "active crawl",
+		"hakrawler":   "active crawl",
+		"ffuf":        "content fuzz",
+		"gobuster":    "content fuzz",
+		"feroxbuster": "content fuzz",
+		"nuclei":      "vuln scan",
+	}
+
 	for _, t := range tools {
-		required := text.Colors{text.FgYellow}.Sprint("no")
+		required := "optional"
 		if t.Required {
-			required = text.Colors{text.FgCyan, text.Bold}.Sprint("yes")
+			required = "required"
 		}
-		var status string
+		status := "missing"
 		if t.Installed {
-			status = text.Colors{text.FgGreen, text.Bold}.Sprint("✔ installed")
-		} else {
-			status = text.Colors{text.FgRed}.Sprint("✘ missing")
+			status = "installed"
 		}
-		tw.AppendRow(table.Row{
-			text.Colors{text.Bold}.Sprint(t.Name),
-			required,
-			status,
-			text.Colors{text.Faint}.Sprint(t.InstallCmd),
-		})
+		tw.AppendRow(table.Row{t.Name, roleMap[t.Name], required, status, t.InstallCmd})
 	}
 	b := strings.Builder{}
-	b.WriteString("macaron setup\n")
+	b.WriteString("tool inventory\n")
 	b.WriteString(tw.Render())
 	b.WriteString("\n")
 	return b.String()
@@ -314,24 +337,15 @@ func InstallMissingTools(ctx context.Context, tools []SetupTool) ([]string, erro
 
 func RenderScanSummary(results []model.ScanResult) string {
 	tw := table.NewWriter()
-	tw.SetStyle(tableStyle())
 	tw.AppendHeader(table.Row{"TARGET", "MODE", "SUBDOMAINS", "LIVE", "URLS", "VULNS", "DURATION"})
 	for _, r := range results {
-		vulnCell := strconv.Itoa(r.Stats.Vulns)
-		if r.Stats.Vulns > 0 {
-			vulnCell = text.Colors{text.FgRed, text.Bold}.Sprint(vulnCell)
-		}
-		liveCell := strconv.Itoa(r.Stats.LiveHosts)
-		if r.Stats.LiveHosts > 0 {
-			liveCell = text.Colors{text.FgGreen}.Sprint(liveCell)
-		}
 		tw.AppendRow(table.Row{
-			text.Colors{text.Bold}.Sprint(r.Target),
+			r.Target,
 			r.Mode,
 			r.Stats.Subdomains,
-			liveCell,
+			r.Stats.LiveHosts,
 			r.Stats.URLs,
-			vulnCell,
+			r.Stats.Vulns,
 			fmt.Sprintf("%dms", r.DurationMS),
 		})
 	}
@@ -412,13 +426,4 @@ func ParseStages(raw string) map[string]bool {
 		out[v] = true
 	}
 	return out
-}
-
-// tableStyle returns a consistent styled table style for all output tables.
-func tableStyle() table.Style {
-	s := table.StyleRounded
-	s.Color.Header = text.Colors{text.FgCyan, text.Bold}
-	s.Color.Border = text.Colors{text.Faint}
-	s.Color.Separator = text.Colors{text.Faint}
-	return s
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/root-Manas/macaron/internal/model"
 	_ "modernc.org/sqlite"
 )
-
 type Store struct {
 	baseDir string
 	db      *sql.DB
@@ -220,6 +219,156 @@ func (s *Store) Export(path string, target string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// Analytics returns aggregated statistics across all scans for display in the
+// dashboard analytics tab.
+func (s *Store) Analytics() (model.AnalyticsReport, error) {
+	report := model.AnalyticsReport{}
+
+	// Per-day scan counts and cumulative findings.
+	rows, err := s.db.Query(`
+		SELECT id, target, finished_at, duration_ms, stats_json
+		FROM scans
+		ORDER BY finished_at ASC
+	`)
+	if err != nil {
+		return report, err
+	}
+	defer rows.Close()
+
+	dayMap := map[string]*model.DayStat{}
+	targetVulns := map[string]int{}
+	targetLive := map[string]int{}
+	var totalStats model.ScanStats
+	totalDurationMS := int64(0)
+	scanCount := 0
+
+	for rows.Next() {
+		var id, target, finishedAtRaw, statsRaw string
+		var durationMS int64
+		if err := rows.Scan(&id, &target, &finishedAtRaw, &durationMS, &statsRaw); err != nil {
+			continue
+		}
+		_ = id
+		var stats model.ScanStats
+		if err := json.Unmarshal([]byte(statsRaw), &stats); err != nil {
+			continue
+		}
+		t, _ := time.Parse(time.RFC3339Nano, finishedAtRaw)
+		day := t.UTC().Format("2006-01-02")
+
+		if _, ok := dayMap[day]; !ok {
+			dayMap[day] = &model.DayStat{Day: day}
+		}
+		d := dayMap[day]
+		d.Scans++
+		d.Subdomains += stats.Subdomains
+		d.LiveHosts += stats.LiveHosts
+		d.URLs += stats.URLs
+		d.Vulns += stats.Vulns
+
+		targetVulns[target] += stats.Vulns
+		targetLive[target] += stats.LiveHosts
+
+		totalStats.Subdomains += stats.Subdomains
+		totalStats.LiveHosts += stats.LiveHosts
+		totalStats.Ports += stats.Ports
+		totalStats.URLs += stats.URLs
+		totalStats.JSFiles += stats.JSFiles
+		totalStats.Vulns += stats.Vulns
+		totalDurationMS += durationMS
+		scanCount++
+	}
+	if err := rows.Err(); err != nil {
+		return report, err
+	}
+
+	// Collect day stats sorted by date.
+	days := make([]model.DayStat, 0, len(dayMap))
+	for _, d := range dayMap {
+		days = append(days, *d)
+	}
+	sort.Slice(days, func(i, j int) bool { return days[i].Day < days[j].Day })
+
+	// Top 10 targets by vuln count, then by live hosts.
+	type kv struct {
+		target string
+		vulns  int
+		live   int
+	}
+	ranked := make([]kv, 0, len(targetVulns))
+	for t := range targetVulns {
+		ranked = append(ranked, kv{target: t, vulns: targetVulns[t], live: targetLive[t]})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].vulns != ranked[j].vulns {
+			return ranked[i].vulns > ranked[j].vulns
+		}
+		return ranked[i].live > ranked[j].live
+	})
+	topTargets := make([]model.TargetRank, 0, 10)
+	for i, r := range ranked {
+		if i >= 10 {
+			break
+		}
+		topTargets = append(topTargets, model.TargetRank{Target: r.target, Vulns: r.vulns, LiveHosts: r.live})
+	}
+
+	// Severity distribution requires reading full payloads.
+	sevRows, err := s.db.Query(`SELECT payload_json FROM scans`)
+	if err != nil {
+		return report, err
+	}
+	defer sevRows.Close()
+	sevMap := map[string]int{}
+	for sevRows.Next() {
+		var p string
+		if err := sevRows.Scan(&p); err != nil {
+			continue
+		}
+		res, err := decodeScan(p)
+		if err != nil {
+			continue
+		}
+		for _, v := range res.Vulns {
+			sev := strings.ToLower(strings.TrimSpace(v.Severity))
+			if sev == "" {
+				sev = "unknown"
+			}
+			sevMap[sev]++
+		}
+	}
+	if err := sevRows.Err(); err != nil {
+		return report, err
+	}
+
+	sevDist := make([]model.SeverityCount, 0, len(sevMap))
+	for sev, count := range sevMap {
+		sevDist = append(sevDist, model.SeverityCount{Severity: sev, Count: count})
+	}
+	sort.Slice(sevDist, func(i, j int) bool {
+		order := map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3, "unknown": 4}
+		oi := order[sevDist[i].Severity]
+		oj := order[sevDist[j].Severity]
+		if oi != oj {
+			return oi < oj
+		}
+		return sevDist[i].Count > sevDist[j].Count
+	})
+
+	avgDurationMS := int64(0)
+	if scanCount > 0 {
+		avgDurationMS = totalDurationMS / int64(scanCount)
+	}
+
+	report.ScanCount = scanCount
+	report.Totals = totalStats
+	report.AvgDurationMS = avgDurationMS
+	report.Days = days
+	report.TopTargets = topTargets
+	report.SeverityDist = sevDist
+	return report, nil
 }
 
 func decodeScan(payload string) (*model.ScanResult, error) {
