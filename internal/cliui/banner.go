@@ -2,131 +2,63 @@ package cliui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
 
-// ANSI color codes.
-const (
-	cReset   = "\033[0m"
-	cBold    = "\033[1m"
-	cDim     = "\033[2m"
-	cCyan    = "\033[36m"
-	cGreen   = "\033[32m"
-	cYellow  = "\033[33m"
-	cRed     = "\033[31m"
-	cMagenta = "\033[35m"
-)
+const art = `
+ ___ ___  _   ___   _   ___  ___  _  _
+|  \/  | /_\ / __| /_\ | _ \/ _ \| \| |
+| |\/| |/ _ \ (__ / _ \|   / (_) | .` + "`" + ` |
+|_|  |_/_/ \_\___/_/ \_\_|_\\___/|_|\_|`
 
-// colorEnabled returns true unless NO_COLOR is set (https://no-color.org).
-func colorEnabled() bool {
-	return strings.TrimSpace(os.Getenv("NO_COLOR")) == ""
-}
-
-func cp(codes, v string) string {
-	if !colorEnabled() {
-		return v
-	}
-	return codes + v + cReset
-}
-
-// Info writes a cyan [INF] prefixed line to stderr.
-func Info(format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
-	prefix := cp(cCyan+cBold, "[INF]")
-	fmt.Fprintf(os.Stderr, "%s %s\n", prefix, msg)
-}
-
-// Warn writes a yellow [WRN] prefixed line to stderr.
-func Warn(format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
-	prefix := cp(cYellow+cBold, "[WRN]")
-	fmt.Fprintf(os.Stderr, "%s %s\n", prefix, msg)
-}
-
-// Err writes a red [ERR] prefixed line to stderr.
-func Err(format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
-	prefix := cp(cRed+cBold, "[ERR]")
-	fmt.Fprintf(os.Stderr, "%s %s\n", prefix, msg)
-}
-
-// OK writes a green [OK] prefixed line to stderr.
-func OK(format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
-	prefix := cp(cGreen+cBold, "[OK]")
-	fmt.Fprintf(os.Stderr, "%s %s\n", prefix, msg)
-}
-
-// PrintBanner writes the macaron startup banner to stderr.
-// It respects NO_COLOR and is silent when quiet is true.
-func PrintBanner(version string, quiet bool) {
+// PrintBanner writes the macaron banner to w. If quiet is true, nothing is written.
+func PrintBanner(w io.Writer, version string, quiet bool) {
 	if quiet {
 		return
 	}
-	c := colorEnabled()
-
-	teal := func(s string) string {
-		if !c {
-			return s
-		}
-		return cCyan + cBold + s + cReset
+	if w == nil {
+		w = os.Stderr
 	}
-	dim := func(s string) string {
-		if !c {
-			return s
-		}
-		return cDim + s + cReset
+	noColor := strings.TrimSpace(os.Getenv("NO_COLOR")) != ""
+	if noColor {
+		fmt.Fprintf(w, "%s\n  offensive recon framework  %s\n\n", art, version)
+		return
 	}
-	magenta := func(s string) string {
-		if !c {
-			return s
-		}
-		return cMagenta + cBold + s + cReset
+	fmt.Fprintf(w, "\033[1;35m%s\033[0m\n  \033[2;37moffensive recon framework\033[0m  \033[1;37m%s\033[0m\n\n", art, version)
+}
+
+// Info prints a cyan [INFO] prefixed line.
+func Info(format string, a ...any) {
+	printPrefixed("36", "INFO", format, a...)
+}
+
+// OK prints a green [OK] prefixed line.
+func OK(format string, a ...any) {
+	printPrefixed("32", "OK", format, a...)
+}
+
+// Warn prints a yellow [WARN] prefixed line.
+func Warn(format string, a ...any) {
+	printPrefixed("33", "WARN", format, a...)
+}
+
+// Err prints a red [ERR] prefixed line to stderr.
+func Err(format string, a ...any) {
+	noColor := strings.TrimSpace(os.Getenv("NO_COLOR")) != ""
+	label := "[ERR]"
+	if !noColor {
+		label = "\033[31m[ERR]\033[0m"
 	}
+	fmt.Fprintf(os.Stderr, label+" "+format+"\n", a...)
+}
 
-	// Box-drawing ASCII art for "MACARON" — safe in Go raw string literals.
-	art := []string{
-		`╔╦╗╔═╗╔═╗╔═╗╦═╗╔═╗╔╗╔`,
-		`║║║╠═╣║  ╠═╣╠╦╝║ ║║║║`,
-		`╩ ╩╩ ╩╚═╝╩ ╩╩╚═╚═╝╝╚╝`,
+func printPrefixed(code, tag, format string, a ...any) {
+	noColor := strings.TrimSpace(os.Getenv("NO_COLOR")) != ""
+	label := "[" + tag + "]"
+	if !noColor {
+		label = "\033[" + code + "m[" + tag + "]\033[0m"
 	}
-
-	fmt.Fprintln(os.Stderr)
-	for _, line := range art {
-		fmt.Fprintf(os.Stderr, "  %s\n", teal(line))
-	}
-	fmt.Fprintf(os.Stderr, "\n  %s  %s\n", magenta("Fast Recon Workflow"), dim("v"+version))
-	fmt.Fprintf(os.Stderr, "  %s\n", dim("github.com/root-Manas/macaron"))
-	fmt.Fprintf(os.Stderr, "  %s\n\n", dim(strings.Repeat("─", 40)))
-}
-
-// Highlight wraps v in bold white.
-func Highlight(v string) string {
-	return cp(cBold, v)
-}
-
-// Muted wraps v in dim white.
-func Muted(v string) string {
-	return cp(cDim, v)
-}
-
-// GreenText wraps v in green.
-func GreenText(v string) string {
-	return cp(cGreen, v)
-}
-
-// RedText wraps v in red.
-func RedText(v string) string {
-	return cp(cRed, v)
-}
-
-// YellowText wraps v in yellow.
-func YellowText(v string) string {
-	return cp(cYellow, v)
-}
-
-// CyanText wraps v in cyan.
-func CyanText(v string) string {
-	return cp(cCyan, v)
+	fmt.Printf(label+" "+format+"\n", a...)
 }
