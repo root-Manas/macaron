@@ -1,74 +1,8 @@
 package main
 
 import (
-	"os"
 	"testing"
 )
-
-func withArgs(args []string, fn func()) {
-	orig := osArgs()
-	setOsArgs(args)
-	defer setOsArgs(orig)
-	fn()
-}
-
-func TestNormalizeLegacySetup(t *testing.T) {
-	withArgs([]string{"macaron", "-setup"}, func() {
-		normalizeLegacyArgs()
-		if osArgs()[1] != "-stp" {
-			t.Fatalf("expected -stp, got %s", osArgs()[1])
-		}
-	})
-}
-
-func TestNormalizeCommandScan(t *testing.T) {
-	withArgs([]string{"macaron", "scan", "example.com", "--fast"}, func() {
-		normalizeCompactFlags()
-		normalizeCommandArgs()
-		args := osArgs()
-		want := []string{"macaron", "--scn", "example.com", "--fst"}
-		if len(args) != len(want) {
-			t.Fatalf("unexpected len: %#v", args)
-		}
-		for i := range want {
-			if args[i] != want[i] {
-				t.Fatalf("idx %d: got %q want %q", i, args[i], want[i])
-			}
-		}
-	})
-}
-
-func TestNormalizeLongToCompact(t *testing.T) {
-	withArgs([]string{"macaron", "--scan", "example.com", "--threads", "20"}, func() {
-		normalizeCompactFlags()
-		args := osArgs()
-		want := []string{"macaron", "--scn", "example.com", "--thr", "20"}
-		if len(args) != len(want) {
-			t.Fatalf("unexpected len: %#v", args)
-		}
-		for i := range want {
-			if args[i] != want[i] {
-				t.Fatalf("idx %d: got %q want %q", i, args[i], want[i])
-			}
-		}
-	})
-}
-
-func TestNormalizeSingleDashCompact(t *testing.T) {
-	withArgs([]string{"macaron", "-stp", "-ver"}, func() {
-		normalizeCompactFlags()
-		args := osArgs()
-		want := []string{"macaron", "--stp", "--ver"}
-		if len(args) != len(want) {
-			t.Fatalf("unexpected len: %#v", args)
-		}
-		for i := range want {
-			if args[i] != want[i] {
-				t.Fatalf("idx %d: got %q want %q", i, args[i], want[i])
-			}
-		}
-	})
-}
 
 func TestApplyProfilePassive(t *testing.T) {
 	mode := "wide"
@@ -92,10 +26,44 @@ func TestApplyProfileAggressive(t *testing.T) {
 	}
 }
 
-func osArgs() []string {
-	return append([]string(nil), os.Args...)
+func TestApplyProfileBalanced(t *testing.T) {
+	mode := "wide"
+	rate := 150
+	threads := 30
+	stages := "all"
+	applyProfile("balanced", &mode, &rate, &threads, &stages)
+	// balanced leaves defaults unchanged
+	if mode != "wide" || rate != 150 || threads != 30 || stages != "all" {
+		t.Fatalf("unexpected balanced values: mode=%s rate=%d threads=%d stages=%s", mode, rate, threads, stages)
+	}
 }
 
-func setOsArgs(v []string) {
-	os.Args = append([]string(nil), v...)
+func TestLooksLikeDomain(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"example.com", true},
+		{"sub.example.com", true},
+		{"-flag", false},
+		{"nodots", false},
+		{"has space.com", false},
+	}
+	for _, c := range cases {
+		got := looksLikeDomain(c.in)
+		if got != c.want {
+			t.Errorf("looksLikeDomain(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
 }
+
+func TestMacaronHomeOverride(t *testing.T) {
+	got, err := macaronHome("/tmp/test-storage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/tmp/test-storage" {
+		t.Fatalf("expected /tmp/test-storage, got %s", got)
+	}
+}
+

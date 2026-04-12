@@ -21,7 +21,13 @@ import (
 	"github.com/root-Manas/macaron/internal/store"
 )
 
-var toolNames = []string{"subfinder", "assetfinder", "findomain", "nuclei"}
+var toolNames = []string{
+	"subfinder", "assetfinder", "findomain", "amass",
+	"nuclei", "httpx", "dnsx", "naabu",
+	"gau", "waybackurls", "katana",
+	"ffuf", "gobuster", "feroxbuster",
+	"gospider", "hakrawler",
+}
 
 type SetupTool struct {
 	Name          string
@@ -89,10 +95,10 @@ func (a *App) ShowStatus(limit int) (string, error) {
 		return "", err
 	}
 	if len(summaries) == 0 {
-		return "No scans found. Run: macaron -s example.com", nil
+		return "no scans on record. run: macaron scan <target>", nil
 	}
 	b := strings.Builder{}
-	b.WriteString("macaronV2 status\n")
+	b.WriteString("scan history\n")
 	tw := table.NewWriter()
 	tw.AppendHeader(table.Row{"ID", "TARGET", "MODE", "LIVE", "URLS", "VULNS", "FINISHED"})
 	for _, s := range summaries {
@@ -237,16 +243,30 @@ func ListTools() []model.ToolStatus {
 
 func SetupCatalog() []SetupTool {
 	tools := []SetupTool{
+		// Subdomain enumeration
 		{Name: "subfinder", Binary: "subfinder", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"},
 		{Name: "assetfinder", Binary: "assetfinder", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/tomnomnom/assetfinder@latest"},
-		{Name: "findomain", Binary: "findomain", Required: false, InstallMethod: "manual", InstallCmd: "apt install findomain OR download release binary"},
-		{Name: "nuclei", Binary: "nuclei", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"},
+		{Name: "findomain", Binary: "findomain", Required: false, InstallMethod: "manual", InstallCmd: "https://github.com/Findomain/Findomain/releases"},
+		{Name: "amass", Binary: "amass", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/owasp-amass/amass/v4/...@master"},
+		// HTTP probing & tech detection
 		{Name: "httpx", Binary: "httpx", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/httpx/cmd/httpx@latest"},
+		// DNS resolution & brute
 		{Name: "dnsx", Binary: "dnsx", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest"},
+		// Port scanning
 		{Name: "naabu", Binary: "naabu", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"},
+		// URL discovery (passive)
 		{Name: "gau", Binary: "gau", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/lc/gau/v2/cmd/gau@latest"},
 		{Name: "waybackurls", Binary: "waybackurls", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/tomnomnom/waybackurls@latest"},
+		// Active crawling
 		{Name: "katana", Binary: "katana", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/katana/cmd/katana@latest"},
+		{Name: "gospider", Binary: "gospider", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/jaeles-project/gospider@latest"},
+		{Name: "hakrawler", Binary: "hakrawler", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/hakluke/hakrawler@latest"},
+		// Content discovery / fuzzing
+		{Name: "ffuf", Binary: "ffuf", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/ffuf/ffuf/v2@latest"},
+		{Name: "gobuster", Binary: "gobuster", Required: false, InstallMethod: "go", InstallCmd: "go install github.com/OJ/gobuster/v3@latest"},
+		{Name: "feroxbuster", Binary: "feroxbuster", Required: false, InstallMethod: "manual", InstallCmd: "https://github.com/epi052/feroxbuster/releases"},
+		// Vulnerability scanning
+		{Name: "nuclei", Binary: "nuclei", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"},
 	}
 	for i := range tools {
 		_, err := execLookPath(tools[i].Binary)
@@ -257,20 +277,40 @@ func SetupCatalog() []SetupTool {
 
 func RenderSetup(tools []SetupTool) string {
 	tw := table.NewWriter()
-	tw.AppendHeader(table.Row{"TOOL", "REQUIRED", "STATUS", "INSTALL"})
+	tw.AppendHeader(table.Row{"TOOL", "ROLE", "REQUIRED", "STATUS", "INSTALL"})
+
+	roleMap := map[string]string{
+		"subfinder":   "subdomain enum",
+		"assetfinder": "subdomain enum",
+		"findomain":   "subdomain enum",
+		"amass":       "subdomain enum",
+		"httpx":       "http probe",
+		"dnsx":        "dns resolve",
+		"naabu":       "port scan",
+		"gau":         "url discovery",
+		"waybackurls": "url discovery",
+		"katana":      "active crawl",
+		"gospider":    "active crawl",
+		"hakrawler":   "active crawl",
+		"ffuf":        "content fuzz",
+		"gobuster":    "content fuzz",
+		"feroxbuster": "content fuzz",
+		"nuclei":      "vuln scan",
+	}
+
 	for _, t := range tools {
-		required := "no"
+		required := "optional"
 		if t.Required {
-			required = "yes"
+			required = "required"
 		}
 		status := "missing"
 		if t.Installed {
 			status = "installed"
 		}
-		tw.AppendRow(table.Row{t.Name, required, status, t.InstallCmd})
+		tw.AppendRow(table.Row{t.Name, roleMap[t.Name], required, status, t.InstallCmd})
 	}
 	b := strings.Builder{}
-	b.WriteString("macaron setup\n")
+	b.WriteString("tool inventory\n")
 	b.WriteString(tw.Render())
 	b.WriteString("\n")
 	return b.String()

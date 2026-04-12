@@ -85,8 +85,8 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 			}
 		}
 
-		for _, tool := range []string{"subfinder", "assetfinder", "findomain"} {
-			lines, err := runSubdomainTool(ctx, tool, result.Target, opts.Threads)
+		for _, tool := range []string{"subfinder", "assetfinder", "findomain", "amass"} {
+			lines, err := runSubdomainTool(ctx, tool, result.Target, opts.Threads, opts.APIKeys)
 			if err != nil {
 				continue
 			}
@@ -148,7 +148,7 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 	if stageOn(opts.EnabledStages, "ports") {
 		stageStart := time.Now()
 		emit(opts.Progress, model.StageEvent{Timestamp: stageStart, Type: model.EventStageStart, Target: result.Target, Stage: "ports", Message: "scanning common ports"})
-		ports := scanCommonPorts(probeInputs, opts.Threads)
+		ports := scanCommonPorts(ctx, probeInputs, opts.Threads)
 		result.Ports = ports
 		emit(opts.Progress, model.StageEvent{
 			Timestamp:  time.Now(),
@@ -247,22 +247,80 @@ func hasBinary(name string) bool {
 	return err == nil
 }
 
-func runSubdomainTool(ctx context.Context, tool string, target string, threads int) ([]string, error) {
+func runSubdomainTool(ctx context.Context, tool string, target string, threads int, apiKeys map[string]string) ([]string, error) {
 	if !hasBinary(tool) {
 		return nil, fmt.Errorf("%s missing", tool)
 	}
 	cmdline := ""
 	switch tool {
 	case "subfinder":
-		cmdline = fmt.Sprintf("subfinder -d %s -silent -all -t %d", shellEscape(target), threads)
+		base := fmt.Sprintf("subfinder -d %s -silent -all -t %d", shellEscape(target), threads)
+		if provConf := writeSubfinderProviderConfig(apiKeys); provConf != "" {
+			defer os.Remove(provConf)
+			base += " -provider-config " + shellEscape(provConf)
+		}
+		cmdline = base
 	case "assetfinder":
 		cmdline = fmt.Sprintf("assetfinder --subs-only %s", shellEscape(target))
 	case "findomain":
 		cmdline = fmt.Sprintf("findomain -t %s -q", shellEscape(target))
+	case "amass":
+		cmdline = fmt.Sprintf("amass enum -passive -d %s", shellEscape(target))
 	default:
 		return nil, fmt.Errorf("unsupported tool")
 	}
 	return runLines(ctx, cmdline, 4*time.Minute)
+}
+
+// writeSubfinderProviderConfig creates a temporary provider-config.yaml with
+// macaron's API keys so subfinder uses them without changing the user's own
+// subfinder config. Returns the temp file path, or "" if nothing to write.
+func writeSubfinderProviderConfig(apiKeys map[string]string) string {
+	if len(apiKeys) == 0 {
+		return ""
+	}
+	// macaron key name → subfinder provider name
+	mapping := map[string]string{
+		"securitytrails": "securitytrails",
+		"virustotal":     "virustotal",
+		"shodan":         "shodan",
+		"binaryedge":     "binaryedge",
+		"c99":            "c99",
+		"chaos":          "chaos",
+		"hunter":         "hunter",
+		"intelx":         "intelx",
+		"urlscan":        "urlscan",
+		"zoomeye":        "zoomeye",
+		"fullhunt":       "fullhunt",
+		"github":         "github",
+		"leakix":         "leakix",
+		"netlas":         "netlas",
+		"quake":          "quake",
+	}
+	providers := make(map[string][]string)
+	for macaronKey, providerName := range mapping {
+		v, ok := apiKeys[macaronKey]
+		if !ok || strings.TrimSpace(v) == "" {
+			continue
+		}
+		providers[providerName] = append(providers[providerName], v)
+	}
+	if len(providers) == 0 {
+		return ""
+	}
+	tmp, err := os.CreateTemp("", "macaron_sfprov_*.yaml")
+	if err != nil {
+		return ""
+	}
+	defer tmp.Close()
+	// Write YAML manually — keep it simple.
+	for provider, keys := range providers {
+		fmt.Fprintf(tmp, "%s:\n", provider)
+		for _, k := range keys {
+			fmt.Fprintf(tmp, "  - %s\n", k)
+		}
+	}
+	return tmp.Name()
 }
 
 func runLines(parent context.Context, cmdline string, timeout time.Duration) ([]string, error) {
@@ -481,8 +539,15 @@ func extractTitle(r io.Reader) string {
 	return t
 }
 
-func scanCommonPorts(hosts []string, threads int) []model.PortHit {
-	ports := []int{80, 443, 8080, 8443, 3000, 5000, 8000, 9000}
+func scanCommonPorts(ctx context.Context, hosts []string, threads int) []model.PortHit {
+	// Use naabu if available — it is significantly faster and supports more ports.
+	if hasBinary("naabu") {
+		if hits := runNaabu(ctx, hosts, threads); len(hits) > 0 {
+			return hits
+		}
+	}
+	// Fallback: native TCP dial on common web ports.
+	ports := []int{80, 443, 8080, 8443, 3000, 5000, 8000, 8888, 9000, 9090, 4443, 3443}
 	type job struct {
 		host string
 		port int
@@ -526,13 +591,49 @@ func scanCommonPorts(hosts []string, threads int) []model.PortHit {
 	return out
 }
 
+func runNaabu(ctx context.Context, hosts []string, threads int) []model.PortHit {
+	if len(hosts) == 0 {
+		return nil
+	}
+	tmp, err := os.CreateTemp("", "macaron_naabu_hosts_*.txt")
+	if err != nil {
+		return nil
+	}
+	defer os.Remove(tmp.Name())
+	for _, h := range hosts {
+		fmt.Fprintln(tmp, h)
+	}
+	_ = tmp.Close()
+
+	lines, err := runLines(ctx,
+		fmt.Sprintf("naabu -list %s -silent -c %d -top-ports 1000", shellEscape(tmp.Name()), threads),
+		10*time.Minute)
+	if err != nil {
+		return nil
+	}
+	out := make([]model.PortHit, 0, len(lines))
+	for _, line := range lines {
+		// naabu output: host:port
+		if i := strings.LastIndex(line, ":"); i > 0 {
+			host := line[:i]
+			portStr := line[i+1:]
+			port, err := strconv.Atoi(portStr)
+			if err != nil {
+				continue
+			}
+			out = append(out, model.PortHit{Host: host, Port: port})
+		}
+	}
+	return out
+}
+
 func (e *Engine) discoverURLs(ctx context.Context, hosts []string, threads int) []string {
 	hosts = dedupe(hosts)
 	if len(hosts) == 0 {
 		return nil
 	}
 	jobs := make(chan string)
-	results := make(chan []string, len(hosts))
+	results := make(chan []string, len(hosts)*3)
 	wg := sync.WaitGroup{}
 	for i := 0; i < threads; i++ {
 		wg.Add(1)
@@ -540,6 +641,14 @@ func (e *Engine) discoverURLs(ctx context.Context, hosts []string, threads int) 
 			defer wg.Done()
 			for host := range jobs {
 				results <- e.waybackURLs(ctx, host)
+				// Try gau if available (combines wayback + common crawl + otx + urlscan).
+				if hasBinary("gau") {
+					results <- runGau(ctx, host)
+				}
+				// Try katana (active crawler) if available.
+				if hasBinary("katana") {
+					results <- runKatana(ctx, host)
+				}
 			}
 		}()
 	}
@@ -554,6 +663,16 @@ func (e *Engine) discoverURLs(ctx context.Context, hosts []string, threads int) 
 		all = append(all, batch...)
 	}
 	return dedupe(all)
+}
+
+func runGau(ctx context.Context, host string) []string {
+	lines, _ := runLines(ctx, fmt.Sprintf("gau --threads 5 %s", shellEscape(host)), 3*time.Minute)
+	return lines
+}
+
+func runKatana(ctx context.Context, host string) []string {
+	lines, _ := runLines(ctx, fmt.Sprintf("katana -u https://%s -silent -jc -d 3", shellEscape(host)), 5*time.Minute)
+	return lines
 }
 
 func (e *Engine) waybackURLs(ctx context.Context, host string) []string {
@@ -627,7 +746,7 @@ func runNuclei(ctx context.Context, hosts []model.LiveHost) ([]model.Vulnerabili
 	if len(hosts) == 0 {
 		return nil, nil
 	}
-	tmp, err := os.CreateTemp("", "macaronv2_hosts_*.txt")
+	tmp, err := os.CreateTemp("", "macaron_hosts_*.txt")
 	if err != nil {
 		return nil, err
 	}
