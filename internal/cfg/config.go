@@ -272,10 +272,10 @@ func readAmassConfig() map[string]string {
 	return nil
 }
 
-// flattenAPIKeys does a shallow dive to extract any key whose name contains
-// "key" or "token" and whose value is a non-empty string.
-// When a value is a nested map[string]any the function recurses and prefixes
-// the resulting keys with the parent key name joined by "_"
+// flattenAPIKeys recursively extracts API keys from an arbitrary config map.
+// For string leaf values, it includes entries whose key name contains "key"
+// or "token". For nested map[string]any values, it recurses and prefixes
+// child key names with the parent key joined by "_"
 // (e.g. parent "virustotal" + child "key" → "virustotal_key").
 func flattenAPIKeys(m map[string]any) map[string]string {
 	out := make(map[string]string)

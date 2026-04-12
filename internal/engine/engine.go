@@ -148,7 +148,7 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 	if stageOn(opts.EnabledStages, "ports") {
 		stageStart := time.Now()
 		emit(opts.Progress, model.StageEvent{Timestamp: stageStart, Type: model.EventStageStart, Target: result.Target, Stage: "ports", Message: "scanning common ports"})
-		ports := scanCommonPorts(ctx, probeInputs, opts.Threads)
+		ports := scanCommonPorts(ctx, probeInputs, opts.Threads, opts.Progress)
 		result.Ports = ports
 		emit(opts.Progress, model.StageEvent{
 			Timestamp:  time.Now(),
@@ -545,10 +545,14 @@ func extractTitle(r io.Reader) string {
 	return t
 }
 
-func scanCommonPorts(ctx context.Context, hosts []string, threads int) []model.PortHit {
+func scanCommonPorts(ctx context.Context, hosts []string, threads int, progress func(model.StageEvent)) []model.PortHit {
 	// Use naabu if available — it is significantly faster and supports more ports.
 	if hasBinary("naabu") {
-		if hits := runNaabu(ctx, hosts, threads); len(hits) > 0 {
+		hits, err := runNaabu(ctx, hosts, threads)
+		if err != nil {
+			// naabu is installed but failed (e.g. permissions); warn and fall through.
+			emit(progress, model.StageEvent{Type: model.EventWarn, Stage: "ports", Message: "naabu failed (" + err.Error() + ") — falling back to native port scan"})
+		} else if len(hits) > 0 {
 			return hits
 		}
 	}
@@ -597,13 +601,13 @@ func scanCommonPorts(ctx context.Context, hosts []string, threads int) []model.P
 	return out
 }
 
-func runNaabu(ctx context.Context, hosts []string, threads int) []model.PortHit {
+func runNaabu(ctx context.Context, hosts []string, threads int) ([]model.PortHit, error) {
 	if len(hosts) == 0 {
-		return nil
+		return nil, nil
 	}
 	tmp, err := os.CreateTemp("", "macaron_naabu_hosts_*.txt")
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer os.Remove(tmp.Name())
 	for _, h := range hosts {
@@ -614,7 +618,7 @@ func runNaabu(ctx context.Context, hosts []string, threads int) []model.PortHit 
 	cmd := fmt.Sprintf("naabu -list %s -silent -c %d -top-ports 1000", shellEscape(tmp.Name()), threads)
 	lines, err := runLines(ctx, cmd, 10*time.Minute)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := make([]model.PortHit, 0, len(lines))
 	for _, line := range lines {
@@ -629,7 +633,7 @@ func runNaabu(ctx context.Context, hosts []string, threads int) []model.PortHit 
 			out = append(out, model.PortHit{Host: host, Port: port})
 		}
 	}
-	return out
+	return out, nil
 }
 
 func (e *Engine) discoverURLs(ctx context.Context, hosts []string, threads int) []string {
@@ -638,7 +642,11 @@ func (e *Engine) discoverURLs(ctx context.Context, hosts []string, threads int) 
 		return nil
 	}
 	jobs := make(chan string)
-	results := make(chan []string, len(hosts)*3)
+	// Buffer for up to 3 URL sources per host: Wayback CDX, gau, katana.
+	// This upper bound is stable since we always emit exactly those three
+	// (when available) per host goroutine.
+	const urlSourcesPerHost = 3
+	results := make(chan []string, len(hosts)*urlSourcesPerHost)
 	wg := sync.WaitGroup{}
 	for i := 0; i < threads; i++ {
 		wg.Add(1)

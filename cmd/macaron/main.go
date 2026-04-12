@@ -706,7 +706,7 @@ func looksLikeDomain(s string) bool {
 	if len(parts) < 2 {
 		return false
 	}
-	tld := parts[len(parts)-1]
+	tld := strings.ToLower(parts[len(parts)-1])
 	// TLD must be alphabetic-only and at least 2 characters.
 	if len(tld) < 2 {
 		return false

@@ -45,12 +45,13 @@ func TestLooksLikeDomain(t *testing.T) {
 	}{
 		{"example.com", true},
 		{"sub.example.com", true},
+		{"Example.COM", true},  // uppercase TLD accepted
 		{"-flag", false},
 		{"nodots", false},
 		{"has space.com", false},
-		{"example.123", false},  // numeric tld
-		{"example.", false},     // empty tld
-		{"example.c", false},    // tld too short
+		{"example.123", false}, // numeric tld
+		{"example.", false},    // empty tld
+		{"example.c", false},   // tld too short
 	}
 	for _, c := range cases {
 		got := looksLikeDomain(c.in)
