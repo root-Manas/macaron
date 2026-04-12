@@ -2,6 +2,16 @@
 
 Fast reconnaissance workflow in Go with SQLite-backed persistence and an operator-focused dashboard.
 
+```
+  ╔╦╗╔═╗╔═╗╔═╗╦═╗╔═╗╔╗╔
+  ║║║╠═╣║  ╠═╣╠╦╝║ ║║║║
+  ╩ ╩╩ ╩╚═╝╩ ╩╩╚═╚═╝╝╚╝
+
+  Fast Recon Workflow  v3.0.0
+  github.com/root-Manas/macaron
+  ────────────────────────────────────────
+```
+
 ## The Model
 
 `macaronV2` is designed around one simple loop:
@@ -22,27 +32,76 @@ chmod +x install.sh
 source ~/.bashrc
 
 macaron setup
-macaron scan example.com --profile balanced
+macaron scan example.com -prf balanced
 macaron status
-macaron serve --addr 127.0.0.1:8088
+macaron serve
 ```
 
 ## Core Commands
 
-```bash
-macaron setup
-macaron scan <target...>
-macaron status
-macaron results -d <domain> -w <type>
-macaron serve
-macaron export -o results.json
+```
+USAGE
+  macaron scan example.com
+  macaron status
+  macaron results -dom example.com -wht live
+  macaron serve -adr 127.0.0.1:8088
+  macaron setup
+  macaron export -out results.json
+
+SCAN FLAGS
+  -scn TARGET   Scan one or more targets (repeatable)
+  -fil FILE     Read targets from file
+  -inp          Read targets from stdin
+  -mod MODE     Scan mode: wide|narrow|fast|deep|osint
+  -stg LIST     Stages: subdomains,http,ports,urls,vulns
+  -prf NAME     Profile: passive|balanced|aggressive
+  -rte N        Request rate hint (default: 150)
+  -thr N        Worker threads (default: 30)
+
+OUTPUT FLAGS
+  -sts          Show recent scan summaries
+  -res          Show scan results
+  -dom DOMAIN   Filter by domain
+  -wht TYPE     Result view: all|subdomains|live|ports|urls|js|vulns
+  -lim N        Output limit (default: 50)
+  -exp          Export results to JSON
+  -qut          Quiet mode (suppress banner and progress)
+
+API KEYS
+  -sak k=v      Set API key (e.g. -sak securitytrails=KEY)
+  -shk          Show masked API keys
+
+DASHBOARD
+  -srv          Start browser dashboard
+  -adr ADDR     Bind address (default: 127.0.0.1:8088)
+
+TOOLS & CONFIG
+  -stp          Show tool installation status
+  -ins          Install missing supported tools (Linux)
+  -lst          List external tool availability
+  -str DIR      Custom storage root (default: ./storage)
+  -nc           Disable color output
+  -ver          Show version
 ```
 
 ## Profiles
 
-- `passive`: low-noise collection
-- `balanced`: default practical workflow
-- `aggressive`: high-throughput authorized testing
+| Profile     | Description                                        |
+|-------------|----------------------------------------------------|
+| `passive`   | Low-noise, low-rate, mostly passive collection     |
+| `balanced`  | Default practical workflow (recommended)           |
+| `aggressive`| High-throughput for authorized deep testing only   |
+
+## CLI UX
+
+macaron follows the same UX patterns as ProjectDiscovery tools (nuclei, httpx, subfinder):
+
+- **Colored log levels**: `[INF]`, `[WRN]`, `[ERR]`, `[OK]` with distinct colors
+- **Live progress**: Braille-spinner with stage and elapsed time during scans
+- **Colored tables**: Vulns highlighted in red, live hosts in green
+- **Compact flags**: Short (`-scn`, `-mod`, `-prf`) with full-word aliases also accepted
+- **NO_COLOR support**: Respects the `NO_COLOR` environment variable
+- **Quiet mode**: `-qut` suppresses banner and progress for scripted use
 
 ## Storage
 
@@ -61,26 +120,28 @@ storage/
 
 ```bash
 macaron setup
-macaron --install-tools
-macaron --set-api securitytrails=YOUR_KEY
-macaron --show-api
+macaron -ins
+macaron -sak securitytrails=YOUR_KEY
+macaron -shk
 ```
 
 ## Stage Control
 
 ```bash
-macaron scan example.com --stages subdomains,http,urls
+macaron scan example.com -stg subdomains,http,urls
 ```
 
-Available stages: `subdomains,http,ports,urls,vulns`
+Available stages: `subdomains`, `http`, `ports`, `urls`, `vulns`
 
 ## Dashboard
 
 ```bash
-macaron serve --addr 127.0.0.1:8088
+macaron serve
+# or with custom address:
+macaron serve -adr 127.0.0.1:8088
 ```
 
-Open `http://127.0.0.1:8088`.
+Open `http://127.0.0.1:8088` — includes scan list with mode filters, health badges, URL yield trend, and geo map.
 
 ## Release
 
