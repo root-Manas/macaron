@@ -203,5 +203,5 @@ Locates and removes the macaron binary from PATH. Optionally removes the storage
 
 ## security
 
-Use macaron only on systems you own or have explicit written authorisation to test.
+Use macaron only on systems you own or have explicit written authorization to test.
 

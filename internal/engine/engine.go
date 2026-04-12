@@ -275,6 +275,7 @@ func runSubdomainTool(ctx context.Context, tool string, target string, threads i
 // writeSubfinderProviderConfig creates a temporary provider-config.yaml with
 // macaron's API keys so subfinder uses them without changing the user's own
 // subfinder config. Returns the temp file path, or "" if nothing to write.
+// The caller is responsible for removing the returned file when done.
 func writeSubfinderProviderConfig(apiKeys map[string]string) string {
 	if len(apiKeys) == 0 {
 		return ""
@@ -312,13 +313,18 @@ func writeSubfinderProviderConfig(apiKeys map[string]string) string {
 	if err != nil {
 		return ""
 	}
-	defer tmp.Close()
 	// Write YAML manually — keep it simple.
 	for provider, keys := range providers {
 		fmt.Fprintf(tmp, "%s:\n", provider)
 		for _, k := range keys {
 			fmt.Fprintf(tmp, "  - %s\n", k)
 		}
+	}
+	// Explicitly close before returning so the file is fully flushed and
+	// safe for subfinder to read.
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return ""
 	}
 	return tmp.Name()
 }
@@ -605,9 +611,8 @@ func runNaabu(ctx context.Context, hosts []string, threads int) []model.PortHit 
 	}
 	_ = tmp.Close()
 
-	lines, err := runLines(ctx,
-		fmt.Sprintf("naabu -list %s -silent -c %d -top-ports 1000", shellEscape(tmp.Name()), threads),
-		10*time.Minute)
+	cmd := fmt.Sprintf("naabu -list %s -silent -c %d -top-ports 1000", shellEscape(tmp.Name()), threads)
+	lines, err := runLines(ctx, cmd, 10*time.Minute)
 	if err != nil {
 		return nil
 	}

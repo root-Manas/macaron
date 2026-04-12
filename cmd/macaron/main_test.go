@@ -48,6 +48,9 @@ func TestLooksLikeDomain(t *testing.T) {
 		{"-flag", false},
 		{"nodots", false},
 		{"has space.com", false},
+		{"example.123", false},  // numeric tld
+		{"example.", false},     // empty tld
+		{"example.c", false},    // tld too short
 	}
 	for _, c := range cases {
 		got := looksLikeDomain(c.in)
@@ -66,4 +69,3 @@ func TestMacaronHomeOverride(t *testing.T) {
 		t.Fatalf("expected /tmp/test-storage, got %s", got)
 	}
 }
-
