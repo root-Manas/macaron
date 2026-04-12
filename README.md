@@ -1,6 +1,6 @@
 # macaron
 
-Fast, researcher-oriented recon framework. Runs a chained enumeration pipeline — subdomains → live probing → port mapping → URL harvesting → vuln scanning — and stores everything in a local SQLite-backed store you can query and export.
+Fast, researcher-oriented recon framework.
 
 ---
 
