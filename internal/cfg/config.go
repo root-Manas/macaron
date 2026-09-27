@@ -1,7 +1,6 @@
 package cfg
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,7 +29,7 @@ func Load(storageRoot string) (*Config, error) {
 	if err := yaml.Unmarshal(b, cfg); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrPermission) {
+	if err := os.Chmod(path, 0o600); err != nil {
 		return nil, err
 	}
 	if cfg.APIKeys == nil {
@@ -44,7 +43,7 @@ func Save(storageRoot string, cfg *Config) error {
 	if err := os.MkdirAll(storageRoot, 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(storageRoot, 0o700); err != nil && !errors.Is(err, os.ErrPermission) {
+	if err := os.Chmod(storageRoot, 0o700); err != nil {
 		return err
 	}
 	if cfg.APIKeys == nil {

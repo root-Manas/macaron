@@ -24,7 +24,7 @@ func New(baseDir string) (*Store, error) {
 	if err := os.MkdirAll(baseDir, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(baseDir, 0o700); err != nil && !errors.Is(err, os.ErrPermission) {
+	if err := os.Chmod(baseDir, 0o700); err != nil {
 		return nil, err
 	}
 	dbPath := filepath.Join(baseDir, "macaron.db")
@@ -107,6 +107,9 @@ ON CONFLICT(id) DO UPDATE SET
 	// Keep a per-target folder mirror for easy file browsing.
 	targetDir := filepath.Join(s.baseDir, sanitizeFilename(result.Target))
 	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(targetDir, 0o700); err != nil {
 		return err
 	}
 	pretty, err := json.MarshalIndent(result, "", "  ")
