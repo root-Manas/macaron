@@ -29,6 +29,7 @@ Targets may be domain names, IP addresses, or bare origin URLs such as `https://
 
 ```sh
 ./macaron scan -t example.com -t example.org
+./macaron scan -t example.com -t example.org --target-workers 2
 ./macaron scan --file targets.txt
 cat targets.txt | ./macaron scan --stdin
 ```
@@ -53,6 +54,7 @@ cat targets.txt | ./macaron scan --stdin
 | `--stages` | `all` | Comma-separated `subdomains,http,ports,urls,vulns` |
 | `--rate` | `150` | Built-in probe dispatches per second, capped at 10,000 |
 | `--threads` | `30` | Concurrent workers, maximum 500 |
+| `--target-workers` | `1` | Number of targets scanned concurrently, maximum 50 |
 | `-q, --quiet` | off | Suppress progress display |
 | `--storage` | user config directory | Override the data directory |
 
