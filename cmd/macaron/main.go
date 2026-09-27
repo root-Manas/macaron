@@ -77,16 +77,17 @@ func run() int {
 func runScan(args []string) int {
 	fs := pflag.NewFlagSet("scan", pflag.ContinueOnError)
 	var (
-		targets []string
-		file    string
-		stdin   bool
-		mode    string
-		rate    int
-		threads int
-		stages  string
-		profile string
-		quiet   bool
-		storage string
+		targets       []string
+		file          string
+		stdin         bool
+		mode          string
+		rate          int
+		threads       int
+		targetWorkers int
+		stages        string
+		profile       string
+		quiet         bool
+		storage       string
 	)
 	fs.StringArrayVarP(&targets, "target", "t", nil, "Target domain(s) (repeatable)")
 	fs.StringVarP(&file, "file", "f", "", "Read targets from file (one per line)")
@@ -94,6 +95,7 @@ func runScan(args []string) int {
 	fs.StringVarP(&mode, "mode", "m", "wide", "Probe discovered hosts (wide) or target only (narrow)")
 	fs.IntVar(&rate, "rate", 150, "Built-in probe dispatches per second (max 10,000)")
 	fs.IntVar(&threads, "threads", 30, "Concurrent workers")
+	fs.IntVar(&targetWorkers, "target-workers", 1, "Targets to scan concurrently")
 	fs.StringVar(&stages, "stages", "all", "Comma-separated stages: subdomains,http,ports,urls,vulns")
 	fs.StringVarP(&profile, "profile", "p", "balanced", "Workflow profile: passive|balanced|aggressive")
 	fs.BoolVarP(&quiet, "quiet", "q", false, "Suppress progress output")
@@ -167,6 +169,14 @@ func runScan(args []string) int {
 		cliui.Err("--threads must be 500 or fewer")
 		return 2
 	}
+	if targetWorkers <= 0 {
+		cliui.Err("--target-workers must be > 0")
+		return 1
+	}
+	if targetWorkers > 50 {
+		cliui.Err("--target-workers must be 50 or fewer")
+		return 2
+	}
 	if rate > 10000 {
 		cliui.Err("--rate must be 10,000 or fewer")
 		return 2
@@ -181,14 +191,15 @@ func runScan(args []string) int {
 	if !quiet {
 		renderer = cliui.NewLiveRenderer(os.Stdout)
 		defer renderer.Close()
-		cliui.Info("profile=%s mode=%s stages=%s rate=%d threads=%d targets=%d",
-			profile, mode, stages, rate, threads, len(allTargets))
+		cliui.Info("profile=%s mode=%s stages=%s rate=%d threads=%d target-workers=%d targets=%d",
+			profile, mode, stages, rate, threads, targetWorkers, len(allTargets))
 	}
 	res, err := application.Scan(ctx, app.ScanArgs{
 		Targets:       allTargets,
 		Mode:          modeVal,
 		Rate:          rate,
 		Threads:       threads,
+		TargetWorkers: targetWorkers,
 		Quiet:         quiet,
 		EnabledStages: app.ParseStages(stages),
 		APIKeys:       config.APIKeys,
@@ -666,6 +677,7 @@ scan flags:
       --stages LIST      subdomains,http,ports,urls,vulns  (default: all)
       --rate N           request rate hint  (default: 150)
       --threads N        workers  (default: 30)
+      --target-workers N targets scanned concurrently (default: 1)
   -q, --quiet            suppress progress output
       --storage DIR      custom storage root
 
@@ -769,10 +781,11 @@ func applyProfile(profile string, mode *string, rate *int, threads *int, stages 
 
 func macaronHome(override string) (string, error) {
 	if strings.TrimSpace(override) != "" {
-		return filepath.Clean(override), nil
+		return override, nil
 	}
-	if env := strings.TrimSpace(os.Getenv("MACARON_HOME")); env != "" {
-		return filepath.Clean(env), nil
+	env := os.Getenv("MACARON_HOME")
+	if strings.TrimSpace(env) != "" {
+		return env, nil
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		legacy := filepath.Join(cwd, "storage")

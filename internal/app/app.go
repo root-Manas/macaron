@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -51,6 +52,7 @@ type ScanArgs struct {
 	Mode          model.Mode
 	Rate          int
 	Threads       int
+	TargetWorkers int
 	Quiet         bool
 	EnabledStages map[string]bool
 	APIKeys       map[string]string
@@ -69,29 +71,89 @@ func (a *App) Scan(ctx context.Context, args ScanArgs) ([]model.ScanResult, erro
 	if len(args.Targets) == 0 {
 		return nil, errors.New("no valid targets provided")
 	}
-	results := make([]model.ScanResult, 0, len(args.Targets))
-	for _, t := range args.Targets {
-		if err := ctx.Err(); err != nil {
-			return results, err
+	workers := args.TargetWorkers
+	if workers <= 0 {
+		workers = 1
+	}
+	if workers > len(args.Targets) {
+		workers = len(args.Targets)
+	}
+
+	scanCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make([]model.ScanResult, len(args.Targets))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
+
+	worker := func() {
+		defer wg.Done()
+		for index := range jobs {
+			if scanCtx.Err() != nil {
+				return
+			}
+			target := args.Targets[index]
+			res, err := a.Engine.ScanTarget(scanCtx, target, engine.Options{
+				Mode:          args.Mode,
+				Rate:          args.Rate,
+				Threads:       args.Threads,
+				Quiet:         args.Quiet,
+				EnabledStages: args.EnabledStages,
+				APIKeys:       args.APIKeys,
+				Progress:      args.Progress,
+			})
+			if err == nil {
+				err = a.Store.SaveScan(res)
+			}
+			if err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("scan %s: %w", target, err)
+					cancel()
+				}
+				errMu.Unlock()
+				return
+			}
+			results[index] = res
 		}
-		res, err := a.Engine.ScanTarget(ctx, t, engine.Options{
-			Mode:          args.Mode,
-			Rate:          args.Rate,
-			Threads:       args.Threads,
-			Quiet:         args.Quiet,
-			EnabledStages: args.EnabledStages,
-			APIKeys:       args.APIKeys,
-			Progress:      args.Progress,
-		})
-		if err != nil {
-			return results, fmt.Errorf("scan %s: %w", t, err)
+	}
+
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go worker()
+	}
+	for index := range args.Targets {
+		select {
+		case jobs <- index:
+		case <-scanCtx.Done():
+			break
 		}
-		if err := a.Store.SaveScan(res); err != nil {
-			return results, fmt.Errorf("save scan %s: %w", t, err)
+		if scanCtx.Err() != nil {
+			break
 		}
-		results = append(results, res)
+	}
+	close(jobs)
+	wg.Wait()
+
+	errMu.Lock()
+	err := firstErr
+	errMu.Unlock()
+	if err != nil {
+		return compactResults(results), err
 	}
 	return results, nil
+}
+
+func compactResults(results []model.ScanResult) []model.ScanResult {
+	out := make([]model.ScanResult, 0, len(results))
+	for _, result := range results {
+		if result.ID != "" {
+			out = append(out, result)
+		}
+	}
+	return out
 }
 
 func (a *App) ShowStatus(limit int) (string, error) {
