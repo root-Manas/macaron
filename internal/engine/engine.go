@@ -400,7 +400,7 @@ func normalizeTarget(t string) string {
 	t = strings.TrimSpace(t)
 	if strings.Contains(t, "://") {
 		u, err := url.Parse(t)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Port() != "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		if err != nil || (strings.ToLower(u.Scheme) != "http" && strings.ToLower(u.Scheme) != "https") || u.User != nil || u.Port() != "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 			return ""
 		}
 		t = u.Hostname()

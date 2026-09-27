@@ -10,7 +10,7 @@ func TestApplyProfilePassive(t *testing.T) {
 	threads := 30
 	stages := "all"
 	applyProfile("passive", &mode, &rate, &threads, &stages)
-	if mode != "osint" || rate != 40 || threads != 10 || stages != "subdomains,http,urls" {
+	if mode != "wide" || rate != 40 || threads != 10 || stages != "subdomains,http,urls" {
 		t.Fatalf("unexpected passive values: mode=%s rate=%d threads=%d stages=%s", mode, rate, threads, stages)
 	}
 }
@@ -45,7 +45,7 @@ func TestLooksLikeDomain(t *testing.T) {
 	}{
 		{"example.com", true},
 		{"sub.example.com", true},
-		{"Example.COM", true},  // uppercase TLD accepted
+		{"Example.COM", true}, // uppercase TLD accepted
 		{"-flag", false},
 		{"nodots", false},
 		{"has space.com", false},

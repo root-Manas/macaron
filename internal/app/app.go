@@ -177,6 +177,10 @@ func ParseTargets(raw []string, filePath string, stdin bool) ([]string, error) {
 		if t == "" || strings.HasPrefix(t, "#") {
 			return
 		}
+		if !validTargetInput(t) {
+			invalid = append(invalid, "invalid target")
+			return
+		}
 		t = normalizeTarget(t)
 		if t == "" {
 			invalid = append(invalid, "invalid target")
@@ -392,32 +396,47 @@ func ioReadAllStdin() ([]byte, error) {
 }
 
 func normalizeTarget(t string) string {
-	t = strings.TrimSpace(t)
-	if strings.Contains(t, "://") {
-		u, err := url.Parse(t)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Port() != "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-			return ""
+	t = strings.TrimSpace(strings.ToLower(t))
+	t = strings.TrimPrefix(t, "https://")
+	t = strings.TrimPrefix(t, "http://")
+	if i := strings.IndexRune(t, '/'); i > -1 {
+		t = t[:i]
+	}
+	if i := strings.IndexRune(t, ':'); i > -1 {
+		t = t[:i]
+	}
+	return t
+}
+
+func validTargetInput(raw string) bool {
+	value := strings.TrimSpace(raw)
+	if strings.Contains(value, "://") {
+		u, err := url.Parse(value)
+		if err != nil || (strings.ToLower(u.Scheme) != "http" && strings.ToLower(u.Scheme) != "https") || u.User != nil || u.Port() != "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return false
 		}
-		t = u.Hostname()
+		value = u.Hostname()
+	} else if strings.ContainsAny(value, "/?#@") || (strings.Contains(value, ":") && net.ParseIP(value) == nil) {
+		return false
 	}
-	t = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(t)), ".")
-	if ip := net.ParseIP(t); ip != nil {
-		return ip.String()
+	value = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".")
+	if net.ParseIP(value) != nil {
+		return true
 	}
-	if len(t) > 253 || t == "" {
-		return ""
+	if len(value) == 0 || len(value) > 253 {
+		return false
 	}
-	for _, label := range strings.Split(t, ".") {
+	for _, label := range strings.Split(value, ".") {
 		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return ""
+			return false
 		}
 		for _, c := range label {
 			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
-				return ""
+				return false
 			}
 		}
 	}
-	return t
+	return true
 }
 
 func firstN(items []string, n int) []string {

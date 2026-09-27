@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -747,9 +748,6 @@ authorized use only.
 func applyProfile(profile string, mode *string, rate *int, threads *int, stages *string) {
 	switch strings.ToLower(strings.TrimSpace(profile)) {
 	case "passive":
-		if *mode == "wide" {
-			*mode = "osint"
-		}
 		if *rate == 150 {
 			*rate = 40
 		}
@@ -825,5 +823,20 @@ func looksLikeDomain(s string) bool {
 		return false
 	}
 	targets, err := app.ParseTargets([]string{s}, "", false)
-	return err == nil && len(targets) == 1
+	if err != nil || len(targets) != 1 {
+		return false
+	}
+	if net.ParseIP(targets[0]) != nil || strings.Contains(s, "://") {
+		return true
+	}
+	parts := strings.Split(targets[0], ".")
+	if len(parts) < 2 || len(parts[len(parts)-1]) < 2 {
+		return false
+	}
+	for _, c := range parts[len(parts)-1] {
+		if c < 'a' || c > 'z' {
+			return false
+		}
+	}
+	return true
 }
