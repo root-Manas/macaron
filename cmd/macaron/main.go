@@ -780,10 +780,11 @@ func applyProfile(profile string, mode *string, rate *int, threads *int, stages 
 }
 
 func macaronHome(override string) (string, error) {
-	if value := strings.TrimSpace(override); value != "" {
-		return value, nil
+	if strings.TrimSpace(override) != "" {
+		return override, nil
 	}
-	if env := strings.TrimSpace(os.Getenv("MACARON_HOME")); env != "" {
+	env := os.Getenv("MACARON_HOME")
+	if strings.TrimSpace(env) != "" {
 		return env, nil
 	}
 	if cwd, err := os.Getwd(); err == nil {
