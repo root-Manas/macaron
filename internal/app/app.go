@@ -33,12 +33,14 @@ var toolNames = []string{
 }
 
 type SetupTool struct {
-	Name          string
-	Binary        string
-	Required      bool
-	Installed     bool
-	InstallMethod string
-	InstallCmd    string
+	Name          string `json:"name"`
+	Binary        string `json:"binary"`
+	Required      bool   `json:"required"`
+	Installed     bool   `json:"installed"`
+	Path          string `json:"path,omitempty"`
+	Version       string `json:"version,omitempty"`
+	InstallMethod string `json:"install_method"`
+	InstallCmd    string `json:"install_command"`
 }
 
 type App struct {
@@ -398,15 +400,19 @@ func SetupCatalog() []SetupTool {
 		{Name: "nuclei", Binary: "nuclei", Required: true, InstallMethod: "go", InstallCmd: "go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"},
 	}
 	for i := range tools {
-		_, err := execLookPath(tools[i].Binary)
-		tools[i].Installed = err == nil
+		path, err := resolveTool(tools[i].Binary)
+		if err == nil {
+			tools[i].Installed = true
+			tools[i].Path = path
+			tools[i].Version = detectToolVersion(path)
+		}
 	}
 	return tools
 }
 
 func RenderSetup(tools []SetupTool) string {
 	tw := table.NewWriter()
-	tw.AppendHeader(table.Row{"TOOL", "ROLE", "REQUIRED", "STATUS", "INSTALL"})
+	tw.AppendHeader(table.Row{"TOOL", "ROLE", "REQUIRED", "STATUS", "VERSION", "PATH", "INSTALL"})
 
 	roleMap := map[string]string{
 		"subfinder":   "subdomain enum",
@@ -436,13 +442,29 @@ func RenderSetup(tools []SetupTool) string {
 		if t.Installed {
 			status = "installed"
 		}
-		tw.AppendRow(table.Row{t.Name, roleMap[t.Name], required, status, t.InstallCmd})
+		version := "-"
+		path := "-"
+		if t.Installed {
+			if t.Version != "" {
+				version = t.Version
+			}
+			path = t.Path
+		}
+		tw.AppendRow(table.Row{t.Name, roleMap[t.Name], required, status, version, path, t.InstallCmd})
 	}
 	b := strings.Builder{}
 	b.WriteString("tool inventory\n")
 	b.WriteString(tw.Render())
 	b.WriteString("\n")
 	return b.String()
+}
+
+func RenderSetupJSON(tools []SetupTool) (string, error) {
+	b, err := json.MarshalIndent(tools, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b) + "\n", nil
 }
 
 func InstallMissingTools(ctx context.Context, tools []SetupTool) ([]string, error) {
@@ -483,6 +505,57 @@ func RenderScanSummary(results []model.ScanResult) string {
 
 func execLookPath(name string) (string, error) {
 	return exec.LookPath(name)
+}
+
+func resolveTool(name string) (string, error) {
+	if path, err := execLookPath(name); err == nil {
+		return path, nil
+	}
+	candidates := make([]string, 0, 8)
+	names := []string{name}
+	if runtime.GOOS == "windows" {
+		names = append(names, name+".exe")
+	}
+	if bin := strings.TrimSpace(os.Getenv("GOBIN")); bin != "" {
+		for _, candidate := range names {
+			candidates = append(candidates, filepath.Join(bin, candidate))
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if gopath := strings.TrimSpace(os.Getenv("GOPATH")); gopath != "" {
+			for _, candidate := range names {
+				candidates = append(candidates, filepath.Join(strings.Split(gopath, string(os.PathListSeparator))[0], "bin", candidate))
+			}
+		} else if goPath, err := exec.Command("go", "env", "GOPATH").Output(); err == nil {
+			for _, candidate := range names {
+				candidates = append(candidates, filepath.Join(strings.TrimSpace(string(goPath)), "bin", candidate))
+			}
+		}
+		for _, candidate := range names {
+			candidates = append(candidates, filepath.Join(home, ".local", "bin", candidate))
+		}
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found on PATH or common Go/bin locations", name)
+}
+
+func detectToolVersion(path string) string {
+	for _, flag := range []string{"--version", "-version", "version", "-v"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		out, err := exec.CommandContext(ctx, path, flag).CombinedOutput()
+		cancel()
+		if err == nil {
+			line := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+			if line != "" {
+				return line
+			}
+		}
+	}
+	return "unknown"
 }
 
 func ioReadAllStdin() ([]byte, error) {

@@ -324,12 +324,27 @@ func runResults(args []string) int {
 func runSetup(args []string) int {
 	fs := pflag.NewFlagSet("setup", pflag.ContinueOnError)
 	var install bool
+	var jsonOutput bool
 	fs.BoolVarP(&install, "install", "i", false, "Auto-install missing tools that support it")
+	fs.BoolVarP(&jsonOutput, "json", "j", false, "Output machine-readable JSON")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
+	if install && jsonOutput {
+		cliui.Err("--install cannot be combined with --json")
+		return 2
+	}
 
 	tools := app.SetupCatalog()
+	if jsonOutput {
+		out, err := app.RenderSetupJSON(tools)
+		if err != nil {
+			cliui.Err("encoding tool inventory: %v", err)
+			return 1
+		}
+		fmt.Print(out)
+		return 0
+	}
 	fmt.Print(app.RenderSetup(tools))
 
 	if install {

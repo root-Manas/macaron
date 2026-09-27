@@ -94,9 +94,21 @@ macaron --help
 
 On PowerShell, use `Get-Command macaron` instead of `command -v`.
 
-External reconnaissance tools are optional. `macaron setup` reports their
-availability, and `macaron setup --install` installs supported Go-based tools on
-Linux. Tools must be available on `PATH` when a scan runs.
+External reconnaissance tools are optional. `macaron setup` reports each
+tool's role, required/optional status, detected version, and resolved path.
+Macaron checks `PATH` plus common `GOBIN`, `GOPATH/bin`, and
+`~/.local/bin` locations, so Go-installed tools are detected even when the
+shell was not started with those directories on `PATH`. The same discovery
+logic is used when a scan launches an optional tool.
+
+```sh
+macaron setup
+macaron setup -j | jq '.[] | select(.installed)'
+```
+
+`macaron setup --install` installs missing supported Go-based tools on Linux.
+It never replaces an installed tool. Manual-install entries show their release
+source. Tools must be available to the current user when a scan runs.
 
 ## End-to-end first run
 
