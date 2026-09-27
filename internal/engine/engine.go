@@ -15,7 +15,9 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -282,8 +284,40 @@ func normalizeMode(m model.Mode) model.Mode {
 }
 
 func hasBinary(name string) bool {
-	_, err := exec.LookPath(name)
+	_, err := findBinary(name)
 	return err == nil
+}
+
+func findBinary(name string) (string, error) {
+	if path, err := exec.LookPath(name); err == nil {
+		return path, nil
+	}
+	candidates := make([]string, 0, 8)
+	names := []string{name}
+	if runtime.GOOS == "windows" {
+		names = append(names, name+".exe")
+	}
+	if bin := strings.TrimSpace(os.Getenv("GOBIN")); bin != "" {
+		for _, candidate := range names {
+			candidates = append(candidates, filepath.Join(bin, candidate))
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if goPath := strings.TrimSpace(os.Getenv("GOPATH")); goPath != "" {
+			for _, candidate := range names {
+				candidates = append(candidates, filepath.Join(strings.Split(goPath, string(os.PathListSeparator))[0], "bin", candidate))
+			}
+		}
+		for _, candidate := range names {
+			candidates = append(candidates, filepath.Join(home, ".local", "bin", candidate))
+		}
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found", name)
 }
 
 func runSubdomainTool(ctx context.Context, tool string, target string, threads int, apiKeys map[string]string) ([]string, error) {
@@ -378,6 +412,9 @@ func writeSubfinderProviderConfig(apiKeys map[string]string) string {
 func runLines(parent context.Context, timeout time.Duration, program string, args ...string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
+	if resolved, err := findBinary(program); err == nil {
+		program = resolved
+	}
 	cmd := exec.CommandContext(ctx, program, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
