@@ -228,6 +228,33 @@ func (a *App) ShowResults(target string, id string, what string, limit int) (str
 	return formatResults(*res, what, limit), nil
 }
 
+func (a *App) ShowResultsJSON(target string, id string) (string, error) {
+	var res *model.ScanResult
+	var err error
+	if id != "" {
+		res, err = a.Store.GetByID(id)
+	} else if target != "" {
+		res, err = a.Store.LatestByTarget(target)
+	} else {
+		summaries, errS := a.Store.Summaries(1)
+		if errS != nil {
+			return "", errS
+		}
+		if len(summaries) == 0 {
+			return "", errors.New("no scans found")
+		}
+		res, err = a.Store.GetByID(summaries[0].ID)
+	}
+	if err != nil {
+		return "", err
+	}
+	b, err := json.MarshalIndent(res, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b) + "\n", nil
+}
+
 func (a *App) Export(path, target string) (string, error) {
 	return a.Store.Export(path, target)
 }

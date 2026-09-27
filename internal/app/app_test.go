@@ -1,10 +1,38 @@
 package app
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/root-Manas/macaron/internal/model"
 )
+
+func TestShowResultsJSONIsMachineReadable(t *testing.T) {
+	storage := filepath.Join(t.TempDir(), "storage")
+	application, err := New(storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Store.Close()
+
+	want := model.ScanResult{ID: "scan-json", Target: "example.com", Mode: model.ModeWide}
+	if err := application.Store.SaveScan(want); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := application.ShowResultsJSON("", want.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got model.ScanResult
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("expected valid JSON, got %q: %v", raw, err)
+	}
+	if got.ID != want.ID {
+		t.Fatalf("expected scan %q, got %q", want.ID, got.ID)
+	}
+}
 
 func TestNormalizeTarget(t *testing.T) {
 	cases := map[string]string{
