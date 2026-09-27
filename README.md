@@ -12,35 +12,131 @@ requests. The `passive` profile still performs HTTP and URL work; use
 
 ## Install
 
-Macaron requires Go 1.25 or newer:
+Macaron requires Go 1.25 or newer. Choose one installation method.
+
+### Option A: install globally with `go install`
+
+This is the shortest route on Linux, macOS, WSL, and any system with Go:
+
+```sh
+go install github.com/root-Manas/macaron/cmd/macaron@latest
+```
+
+Go installs the binary into `GOBIN` when it is configured or, by default, into
+`GOPATH/bin`. Make sure the actual install directory is on your `PATH`:
+
+```sh
+BIN_DIR="$(go env GOBIN)"
+[ -n "$BIN_DIR" ] || BIN_DIR="$(go env GOPATH)/bin"
+export PATH="$BIN_DIR:$PATH"
+macaron version
+```
+
+To make it permanent for Bash or Zsh:
+
+```sh
+echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.profile
+source ~/.profile
+```
+
+### Option B: clone and install with the project script
+
+```sh
+git clone https://github.com/root-Manas/macaron.git
+cd macaron
+./install.sh
+source ~/.profile       # or open a new terminal
+macaron version
+```
+
+`install.sh` builds `./cmd/macaron`, installs it to `~/.local/bin/macaron`, and
+adds that directory to `.bashrc`, `.zshrc`, and `.profile` when needed.
+
+### Option C: build manually
 
 ```sh
 git clone https://github.com/root-Manas/macaron.git
 cd macaron
 go build -trimpath -o macaron ./cmd/macaron
+./macaron version
 ```
 
-The optional installer builds the binary and installs it to `~/.local/bin`:
+To install that build globally on Unix-like systems:
 
 ```sh
-./install.sh
+install -Dm755 ./macaron "$HOME/.local/bin/macaron"
+export PATH="$HOME/.local/bin:$PATH"
+macaron version
 ```
+
+On Windows PowerShell:
+
+```powershell
+git clone https://github.com/root-Manas/macaron.git
+Set-Location macaron
+go build -trimpath -o macaron.exe ./cmd/macaron
+New-Item -ItemType Directory -Force "$HOME\bin" | Out-Null
+Copy-Item .\macaron.exe "$HOME\bin\macaron.exe"
+$env:Path = "$HOME\bin;$env:Path"
+macaron version
+```
+
+For a permanent Windows PATH entry, add `$HOME\bin` through **System
+Properties -> Environment Variables**, then open a new terminal.
+
+### Verify the installation
+
+```sh
+command -v macaron
+macaron version
+macaron --help
+```
+
+On PowerShell, use `Get-Command macaron` instead of `command -v`.
 
 External reconnaissance tools are optional. `macaron setup` reports their
 availability, and `macaron setup --install` installs supported Go-based tools on
 Linux. Tools must be available on `PATH` when a scan runs.
 
-## Quick start
+## End-to-end first run
+
+The following walkthrough starts from an installed binary and produces a saved
+scan, a human-readable result, machine-readable output, and an export file.
+Use a domain you own or are authorized to assess.
 
 ```sh
-macaron scan -t example.com
+# 1. Confirm the binary and inspect optional dependencies
+macaron version
+macaron setup
+
+# 2. Optional: install supported missing tools on Linux
+macaron setup --install
+
+# 3. Inspect where local data will be stored
+macaron config
+
+# 4. Start with a controlled, lower-impact scan
+macaron scan -t example.com -p passive -s subdomains,http,urls
+
+# 5. Inspect the saved scan
 macaron status
+macaron results -d example.com
 macaron results -d example.com -w live
-macaron export -o example.json
+
+# 6. Export results for another tool
+macaron export -d example.com -o example.json
+```
+
+For automation:
+
+```sh
+macaron scan -t example.com -s subdomains,http -j > scan.json
+macaron status -j | jq .
+macaron results -d example.com -j | jq '.stats'
 ```
 
 Every command supports `--help`. Human-readable output is the default; use
-`--json` where supported for shell pipelines and automation.
+`--json` or `-j` where supported for shell pipelines and automation.
 
 ## Command reference
 
