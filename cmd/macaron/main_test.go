@@ -69,4 +69,12 @@ func TestMacaronHomeOverride(t *testing.T) {
 	if got != "/tmp/test-storage" {
 		t.Fatalf("expected /tmp/test-storage, got %s", got)
 	}
+
+	got, err = macaronHome("~/test-storage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "~/test-storage" {
+		t.Fatalf("expected ~/test-storage to remain literal, got %s", got)
+	}
 }

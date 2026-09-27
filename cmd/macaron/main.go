@@ -768,11 +768,11 @@ func applyProfile(profile string, mode *string, rate *int, threads *int, stages 
 }
 
 func macaronHome(override string) (string, error) {
-	if strings.TrimSpace(override) != "" {
-		return filepath.Clean(override), nil
+	if value := strings.TrimSpace(override); value != "" {
+		return value, nil
 	}
 	if env := strings.TrimSpace(os.Getenv("MACARON_HOME")); env != "" {
-		return filepath.Clean(env), nil
+		return env, nil
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		legacy := filepath.Join(cwd, "storage")
