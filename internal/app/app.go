@@ -184,6 +184,18 @@ func (a *App) ShowStatus(limit int) (string, error) {
 	return b.String(), nil
 }
 
+func (a *App) ShowStatusJSON(limit int) (string, error) {
+	summaries, err := a.Store.Summaries(limit)
+	if err != nil {
+		return "", err
+	}
+	b, err := json.MarshalIndent(summaries, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b) + "\n", nil
+}
+
 func (a *App) ShowResults(target string, id string, what string, limit int) (string, error) {
 	what = strings.ToLower(strings.TrimSpace(what))
 	if what == "" {

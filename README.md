@@ -21,7 +21,9 @@ The `install.sh` script builds and installs to `~/.local/bin`. Macaron's externa
 ```sh
 ./macaron scan -t example.com
 ./macaron status
+./macaron status --json
 ./macaron results -d example.com -w live
+./macaron results -d example.com --json
 ./macaron export -o example.json
 ```
 
@@ -60,6 +62,9 @@ cat targets.txt | ./macaron scan --stdin
 
 `--mode wide` probes all discovered hosts. `--mode narrow` limits active HTTP and port probes to the target itself. Use profiles to adjust concurrency and stage selection.
 
+Status and result commands support `--json` for stable machine-readable output in shell
+pipelines and automation. Human-readable tables remain the default.
+
 Macaron filters discovered names to the requested domain and its subdomains. HTTP probes stop at cross-host redirects to keep a probe from silently moving to another site. Missing optional tools are skipped. Failures from installed subdomain tools and Nuclei appear in scan warnings.
 
 ## API keys
@@ -94,7 +99,7 @@ Avoid putting live secrets in shell history or committing the bulk file.
 ./macaron export --domain example.com --output example.json
 ```
 
-Result views are `all`, `subdomains`, `live`, `ports`, `urls`, `js`, and `vulns`. Macaron stores `macaron.db`, `config.yaml`, and per-target JSON snapshots in the data directory. The default is the operating system's user config directory under `macaron`; set `MACARON_HOME` or pass `--storage` to choose another location. `--storage` takes precedence. An existing `./storage` directory is retained for compatibility when neither override is set.
+Result views are `all`, `subdomains`, `live`, `ports`, `urls`, `js`, and `vulns`. Macaron stores `macaron.db`, `config.yaml`, and per-target JSON snapshots in the data directory. SQLite is authoritative; per-target files are atomic mirrors rebuilt automatically when missing after an interrupted write. The default is the operating system's user config directory under `macaron`; set `MACARON_HOME` or pass `--storage` to choose another location. `--storage` takes precedence. An existing `./storage` directory is retained for compatibility when neither override is set.
 
 ## Development
 

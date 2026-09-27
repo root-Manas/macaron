@@ -15,7 +15,7 @@ Deep detail must be opt-in.
 
 Design rule:
 - One-line summary by default.
-- Rich detail via explicit `results`, `serve`, or JSON export.
+- Rich detail via explicit `results`, `export`, or JSON output.
 
 ## 3) Trustworthy State
 

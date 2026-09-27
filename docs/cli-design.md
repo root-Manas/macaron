@@ -7,15 +7,16 @@
 - `macaron status`
 - `macaron results`
 - `macaron export`
-- `macaron serve`
-
-The same actions remain available through legacy flags for backward compatibility.
+- `macaron config`
+- `macaron api`
+- `macaron uninstall`
 
 ## UX Rules
 
 - Scan commands print a run plan before execution.
 - Default scan output is one summary table.
-- Use `results` or `serve` for deeper detail.
+- Use `results` or `export` for deeper detail.
+- Every inspection command supports `--json` for scripts and automation.
 - Error text should include a direct fix action.
 
 ## Profiles
@@ -33,6 +34,5 @@ The same actions remain available through legacy flags for backward compatibilit
 
 ## Compatibility Rules
 
-- Keep legacy short flags functional.
-- Keep legacy `-setup` accepted and translated.
-- Never break `-s`, `-S`, `-R`, `--serve`.
+- Keep legacy short flags functional where they do not conflict with the
+  command-oriented interface.
