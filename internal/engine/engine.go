@@ -3,7 +3,9 @@ package engine
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/root-Manas/macaron/internal/model"
+	"gopkg.in/yaml.v3"
 )
 
 type Options struct {
@@ -44,15 +46,31 @@ func New() *Engine {
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
 	}
 	return &Engine{
-		httpClient: &http.Client{Timeout: 12 * time.Second, Transport: transport},
+		httpClient: &http.Client{
+			Timeout:   12 * time.Second,
+			Transport: transport,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) > 0 && !strings.EqualFold(req.URL.Hostname(), via[0].URL.Hostname()) {
+					return http.ErrUseLastResponse
+				}
+				if len(via) >= 5 {
+					return fmt.Errorf("stopped after 5 redirects")
+				}
+				return nil
+			},
+		},
 	}
 }
 
 func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (model.ScanResult, error) {
+	target = normalizeTarget(target)
+	if target == "" {
+		return model.ScanResult{}, fmt.Errorf("invalid scan target")
+	}
 	start := time.Now()
 	result := model.ScanResult{
-		ID:        fmt.Sprintf("%s-%d", sanitizeTarget(target), start.Unix()),
-		Target:    normalizeTarget(target),
+		ID:        fmt.Sprintf("%s-%d-%s", sanitizeTarget(target), start.UnixNano(), randomSuffix()),
+		Target:    target,
 		Mode:      normalizeMode(opts.Mode),
 		StartedAt: start,
 	}
@@ -65,8 +83,14 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 	if opts.Threads <= 0 {
 		opts.Threads = 30
 	}
+	if opts.Threads > 500 {
+		opts.Threads = 500
+	}
 	if opts.Rate <= 0 {
 		opts.Rate = 150
+	}
+	if opts.Rate > 10000 {
+		opts.Rate = 10000
 	}
 
 	subs := map[string]struct{}{result.Target: {}}
@@ -80,7 +104,7 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 			emit(opts.Progress, model.StageEvent{Timestamp: time.Now(), Type: model.EventWarn, Target: result.Target, Stage: "subdomains", Message: warn})
 		}
 		for _, s := range nativeSubs {
-			if looksLikeHost(s) {
+			if looksLikeHost(s) && withinTarget(s, result.Target) {
 				subs[s] = struct{}{}
 			}
 		}
@@ -88,11 +112,16 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 		for _, tool := range []string{"subfinder", "assetfinder", "findomain", "amass"} {
 			lines, err := runSubdomainTool(ctx, tool, result.Target, opts.Threads, opts.APIKeys)
 			if err != nil {
+				if hasBinary(tool) && ctx.Err() == nil {
+					warn := fmt.Sprintf("%s failed: %v", tool, err)
+					result.Warnings = append(result.Warnings, warn)
+					emit(opts.Progress, model.StageEvent{Timestamp: time.Now(), Type: model.EventWarn, Target: result.Target, Stage: "subdomains", Message: warn})
+				}
 				continue
 			}
 			for _, line := range lines {
 				s := normalizeTarget(line)
-				if s != "" && strings.Contains(s, result.Target) && looksLikeHost(s) {
+				if s != "" && withinTarget(s, result.Target) && looksLikeHost(s) {
 					subs[s] = struct{}{}
 				}
 			}
@@ -101,7 +130,7 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 		if stKey := strings.TrimSpace(opts.APIKeys["securitytrails"]); stKey != "" {
 			stSubs := e.securityTrailsSubdomains(ctx, result.Target, stKey)
 			for _, s := range stSubs {
-				if looksLikeHost(s) {
+				if looksLikeHost(s) && withinTarget(s, result.Target) {
 					subs[s] = struct{}{}
 				}
 			}
@@ -130,7 +159,7 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 	if stageOn(opts.EnabledStages, "http") {
 		stageStart := time.Now()
 		emit(opts.Progress, model.StageEvent{Timestamp: stageStart, Type: model.EventStageStart, Target: result.Target, Stage: "http", Message: "probing live hosts"})
-		live = e.probeHTTP(ctx, probeInputs, opts.Threads)
+		live = e.probeHTTP(ctx, probeInputs, opts.Threads, opts.Rate)
 		result.LiveHosts = live
 		emit(opts.Progress, model.StageEvent{
 			Timestamp:  time.Now(),
@@ -148,7 +177,7 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 	if stageOn(opts.EnabledStages, "ports") {
 		stageStart := time.Now()
 		emit(opts.Progress, model.StageEvent{Timestamp: stageStart, Type: model.EventStageStart, Target: result.Target, Stage: "ports", Message: "scanning common ports"})
-		ports := scanCommonPorts(ctx, probeInputs, opts.Threads, opts.Progress)
+		ports := scanCommonPorts(ctx, probeInputs, opts.Threads, opts.Rate, opts.Progress)
 		result.Ports = ports
 		emit(opts.Progress, model.StageEvent{
 			Timestamp:  time.Now(),
@@ -189,6 +218,10 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 			vulns, err := runNuclei(ctx, live)
 			if err == nil {
 				result.Vulns = vulns
+			} else if ctx.Err() == nil {
+				warn := "nuclei failed: " + err.Error()
+				result.Warnings = append(result.Warnings, warn)
+				emit(opts.Progress, model.StageEvent{Timestamp: time.Now(), Type: model.EventWarn, Target: result.Target, Stage: "vulns", Message: warn})
 			}
 		} else {
 			result.Warnings = append(result.Warnings, "nuclei not installed: vulnerability stage skipped")
@@ -217,11 +250,16 @@ func (e *Engine) ScanTarget(ctx context.Context, target string, opts Options) (m
 	}
 	result.FinishedAt = time.Now()
 	result.DurationMS = result.FinishedAt.Sub(start).Milliseconds()
+	doneMessage := "scan completed"
+	if ctx.Err() != nil {
+		doneMessage = "scan interrupted; saved results may be incomplete"
+		result.Warnings = append(result.Warnings, "scan interrupted; results may be incomplete")
+	}
 	emit(opts.Progress, model.StageEvent{
 		Timestamp:  result.FinishedAt,
 		Type:       model.EventTargetDone,
 		Target:     result.Target,
-		Message:    "scan completed",
+		Message:    doneMessage,
 		DurationMS: result.DurationMS,
 	})
 	return result, nil
@@ -235,7 +273,7 @@ func emit(cb func(model.StageEvent), ev model.StageEvent) {
 
 func normalizeMode(m model.Mode) model.Mode {
 	switch m {
-	case model.ModeFast, model.ModeNarrow, model.ModeWide, model.ModeDeep, model.ModeOSINT:
+	case model.ModeNarrow, model.ModeWide:
 		return m
 	default:
 		return model.ModeWide
@@ -251,25 +289,23 @@ func runSubdomainTool(ctx context.Context, tool string, target string, threads i
 	if !hasBinary(tool) {
 		return nil, fmt.Errorf("%s missing", tool)
 	}
-	cmdline := ""
 	switch tool {
 	case "subfinder":
-		base := fmt.Sprintf("subfinder -d %s -silent -all -t %d", shellEscape(target), threads)
+		args := []string{"-d", target, "-silent", "-all", "-t", strconv.Itoa(threads)}
 		if provConf := writeSubfinderProviderConfig(apiKeys); provConf != "" {
 			defer os.Remove(provConf)
-			base += " -provider-config " + shellEscape(provConf)
+			args = append(args, "-provider-config", provConf)
 		}
-		cmdline = base
+		return runLines(ctx, 4*time.Minute, tool, args...)
 	case "assetfinder":
-		cmdline = fmt.Sprintf("assetfinder --subs-only %s", shellEscape(target))
+		return runLines(ctx, 4*time.Minute, tool, "--subs-only", target)
 	case "findomain":
-		cmdline = fmt.Sprintf("findomain -t %s -q", shellEscape(target))
+		return runLines(ctx, 4*time.Minute, tool, "-t", target, "-q")
 	case "amass":
-		cmdline = fmt.Sprintf("amass enum -passive -d %s", shellEscape(target))
+		return runLines(ctx, 4*time.Minute, tool, "enum", "-passive", "-d", target)
 	default:
 		return nil, fmt.Errorf("unsupported tool")
 	}
-	return runLines(ctx, cmdline, 4*time.Minute)
 }
 
 // writeSubfinderProviderConfig creates a temporary provider-config.yaml with
@@ -313,12 +349,21 @@ func writeSubfinderProviderConfig(apiKeys map[string]string) string {
 	if err != nil {
 		return ""
 	}
-	// Write YAML manually — keep it simple.
-	for provider, keys := range providers {
-		fmt.Fprintf(tmp, "%s:\n", provider)
-		for _, k := range keys {
-			fmt.Fprintf(tmp, "  - %s\n", k)
-		}
+	b, err := yaml.Marshal(providers)
+	if err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return ""
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return ""
+	}
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return ""
 	}
 	// Explicitly close before returning so the file is fully flushed and
 	// safe for subfinder to read.
@@ -329,10 +374,10 @@ func writeSubfinderProviderConfig(apiKeys map[string]string) string {
 	return tmp.Name()
 }
 
-func runLines(parent context.Context, cmdline string, timeout time.Duration) ([]string, error) {
+func runLines(parent context.Context, timeout time.Duration, program string, args ...string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	cmd := shellCommand(ctx, cmdline)
+	cmd := exec.CommandContext(ctx, program, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -345,31 +390,56 @@ func runLines(parent context.Context, cmdline string, timeout time.Duration) ([]
 			lines = append(lines, line)
 		}
 	}
+	if err := s.Err(); err != nil {
+		return nil, err
+	}
 	return dedupe(lines), nil
 }
 
-func shellCommand(ctx context.Context, cmdline string) *exec.Cmd {
-	if runtime.GOOS == "windows" {
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", cmdline)
-	}
-	return exec.CommandContext(ctx, "sh", "-c", cmdline)
-}
-
-func shellEscape(s string) string {
-	return strings.ReplaceAll(s, "'", "")
-}
-
 func normalizeTarget(t string) string {
-	t = strings.TrimSpace(strings.ToLower(t))
-	t = strings.TrimPrefix(t, "https://")
-	t = strings.TrimPrefix(t, "http://")
-	if i := strings.IndexRune(t, '/'); i > -1 {
-		t = t[:i]
+	t = strings.TrimSpace(t)
+	if strings.Contains(t, "://") {
+		u, err := url.Parse(t)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Port() != "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return ""
+		}
+		t = u.Hostname()
 	}
-	if i := strings.IndexRune(t, ':'); i > -1 {
-		t = t[:i]
+	t = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(t)), ".")
+	if ip := net.ParseIP(t); ip != nil {
+		return ip.String()
+	}
+	if len(t) > 253 || t == "" {
+		return ""
+	}
+	for _, label := range strings.Split(t, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return ""
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return ""
+			}
+		}
 	}
 	return t
+}
+
+func randomSuffix() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+func withinTarget(host, target string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	target = strings.TrimSuffix(strings.ToLower(target), ".")
+	if net.ParseIP(target) != nil {
+		return host == target
+	}
+	return host == target || strings.HasSuffix(host, "."+target)
 }
 
 func sanitizeTarget(t string) string {
@@ -477,7 +547,7 @@ func (e *Engine) securityTrailsSubdomains(ctx context.Context, target string, ap
 	return dedupe(out)
 }
 
-func (e *Engine) probeHTTP(ctx context.Context, hosts []string, threads int) []model.LiveHost {
+func (e *Engine) probeHTTP(ctx context.Context, hosts []string, threads, rate int) []model.LiveHost {
 	jobs := make(chan string)
 	results := make(chan model.LiveHost, len(hosts))
 	wg := sync.WaitGroup{}
@@ -486,11 +556,18 @@ func (e *Engine) probeHTTP(ctx context.Context, hosts []string, threads int) []m
 		go func() {
 			defer wg.Done()
 			for host := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
 				if !looksLikeHost(host) {
 					continue
 				}
 				for _, scheme := range []string{"https", "http"} {
-					u := fmt.Sprintf("%s://%s", scheme, host)
+					urlHost := host
+					if ip := net.ParseIP(host); ip != nil && strings.Contains(host, ":") {
+						urlHost = "[" + host + "]"
+					}
+					u := fmt.Sprintf("%s://%s", scheme, urlHost)
 					req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 					if err != nil {
 						continue
@@ -507,8 +584,20 @@ func (e *Engine) probeHTTP(ctx context.Context, hosts []string, threads int) []m
 			}
 		}()
 	}
+	ticker := time.NewTicker(time.Second / time.Duration(max(1, rate)))
+	defer ticker.Stop()
+dispatchHosts:
 	for _, host := range dedupe(hosts) {
-		jobs <- host
+		select {
+		case jobs <- host:
+		case <-ctx.Done():
+			break dispatchHosts
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			break dispatchHosts
+		}
 	}
 	close(jobs)
 	wg.Wait()
@@ -545,7 +634,7 @@ func extractTitle(r io.Reader) string {
 	return t
 }
 
-func scanCommonPorts(ctx context.Context, hosts []string, threads int, progress func(model.StageEvent)) []model.PortHit {
+func scanCommonPorts(ctx context.Context, hosts []string, threads, rate int, progress func(model.StageEvent)) []model.PortHit {
 	// Use naabu if available — it is significantly faster and supports more ports.
 	if hasBinary("naabu") {
 		hits, err := runNaabu(ctx, hosts, threads)
@@ -571,7 +660,7 @@ func scanCommonPorts(ctx context.Context, hosts []string, threads int, progress 
 			defer wg.Done()
 			for j := range jobs {
 				addr := net.JoinHostPort(j.host, strconv.Itoa(j.port))
-				c, err := net.DialTimeout("tcp", addr, 900*time.Millisecond)
+				c, err := (&net.Dialer{Timeout: 900 * time.Millisecond}).DialContext(ctx, "tcp", addr)
 				if err == nil {
 					_ = c.Close()
 					results <- model.PortHit{Host: j.host, Port: j.port}
@@ -579,9 +668,21 @@ func scanCommonPorts(ctx context.Context, hosts []string, threads int, progress 
 			}
 		}()
 	}
+	ticker := time.NewTicker(time.Second / time.Duration(max(1, rate)))
+	defer ticker.Stop()
+dispatchPorts:
 	for _, h := range dedupe(hosts) {
 		for _, p := range ports {
-			jobs <- job{host: h, port: p}
+			select {
+			case jobs <- job{host: h, port: p}:
+			case <-ctx.Done():
+				break dispatchPorts
+			}
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				break dispatchPorts
+			}
 		}
 	}
 	close(jobs)
@@ -615,8 +716,7 @@ func runNaabu(ctx context.Context, hosts []string, threads int) ([]model.PortHit
 	}
 	_ = tmp.Close()
 
-	cmd := fmt.Sprintf("naabu -list %s -silent -c %d -top-ports 1000", shellEscape(tmp.Name()), threads)
-	lines, err := runLines(ctx, cmd, 10*time.Minute)
+	lines, err := runLines(ctx, 10*time.Minute, "naabu", "-list", tmp.Name(), "-silent", "-c", strconv.Itoa(threads), "-top-ports", "1000")
 	if err != nil {
 		return nil, err
 	}
@@ -679,12 +779,12 @@ func (e *Engine) discoverURLs(ctx context.Context, hosts []string, threads int) 
 }
 
 func runGau(ctx context.Context, host string) []string {
-	lines, _ := runLines(ctx, fmt.Sprintf("gau --threads 5 %s", shellEscape(host)), 3*time.Minute)
+	lines, _ := runLines(ctx, 3*time.Minute, "gau", "--threads", "5", host)
 	return lines
 }
 
 func runKatana(ctx context.Context, host string) []string {
-	lines, _ := runLines(ctx, fmt.Sprintf("katana -u https://%s -silent -jc -d 3", shellEscape(host)), 5*time.Minute)
+	lines, _ := runLines(ctx, 5*time.Minute, "katana", "-u", "https://"+host, "-silent", "-jc", "-d", "3")
 	return lines
 }
 
@@ -732,16 +832,7 @@ func extractJS(urls []string) []string {
 }
 
 func looksLikeHost(host string) bool {
-	if host == "" || strings.ContainsAny(host, " \t") {
-		return false
-	}
-	if strings.Contains(host, "*") || strings.Contains(host, "/") {
-		return false
-	}
-	if strings.Contains(host, "@") {
-		return false
-	}
-	return strings.Contains(host, ".")
+	return normalizeTarget(host) != ""
 }
 
 func stageOn(enabled map[string]bool, stage string) bool {

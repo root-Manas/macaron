@@ -16,6 +16,7 @@ type LiveRenderer struct {
 
 	mu          sync.Mutex
 	color       bool
+	interactive bool
 	spinnerOn   bool
 	spinStop    chan struct{}
 	spinFrame   int
@@ -31,10 +32,18 @@ func NewLiveRenderer(out io.Writer) *LiveRenderer {
 	if out == nil {
 		out = os.Stdout
 	}
-	useColor := strings.TrimSpace(os.Getenv("NO_COLOR")) == ""
+	useColor := strings.TrimSpace(os.Getenv("NO_COLOR")) == "" && strings.TrimSpace(os.Getenv("TERM")) != "dumb"
+	interactive := false
+	if f, ok := out.(*os.File); !ok || f == nil {
+		useColor = false
+	} else if info, err := f.Stat(); err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		useColor = false
+	} else {
+		interactive = true
+	}
 	return &LiveRenderer{
 		out:   out,
-		color: useColor,
+		color: useColor, interactive: interactive,
 	}
 }
 
@@ -101,12 +110,13 @@ func (r *LiveRenderer) Close() {
 }
 
 func (r *LiveRenderer) startSpinnerLocked() {
-	if r.spinnerOn {
+	if r.spinnerOn || !r.interactive {
 		return
 	}
 	r.spinnerOn = true
 	r.spinStop = make(chan struct{})
-	go r.spin()
+	stop := r.spinStop
+	go r.spin(stop)
 }
 
 func (r *LiveRenderer) stopSpinnerLocked() {
@@ -115,11 +125,13 @@ func (r *LiveRenderer) stopSpinnerLocked() {
 	}
 	close(r.spinStop)
 	r.spinnerOn = false
-	fmt.Fprint(r.out, "\r\033[2K")
+	if r.interactive {
+		fmt.Fprint(r.out, "\r\033[2K")
+	}
 }
 
-func (r *LiveRenderer) spin() {
-	// Braille spinner — used by Nuclei, httpx, and other ProjectDiscovery tools.
+func (r *LiveRenderer) spin(stop <-chan struct{}) {
+	// Braille spinner for interactive progress output.
 	frames := []string{"⣾", "⣽", "⣻", "⣷", "⣯", "⣟", "⡿", "⢿"}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -150,7 +162,7 @@ func (r *LiveRenderer) spin() {
 			fmt.Fprintf(r.out, "\r\033[2K%s", line)
 			r.lastPrinted = time.Now()
 			r.mu.Unlock()
-		case <-r.spinStop:
+		case <-stop:
 			return
 		}
 	}
@@ -158,7 +170,9 @@ func (r *LiveRenderer) spin() {
 
 func (r *LiveRenderer) printLinef(format string, args ...any) {
 	// Clear the spinner line before printing a new log line.
-	fmt.Fprint(r.out, "\r\033[2K")
+	if r.spinnerOn {
+		fmt.Fprint(r.out, "\r\033[2K")
+	}
 	fmt.Fprintf(r.out, format+"\n", args...)
 }
 
@@ -216,4 +230,3 @@ func chooseTime(v time.Time, fallback time.Time) time.Time {
 	}
 	return v
 }
-

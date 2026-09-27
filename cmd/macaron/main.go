@@ -90,14 +90,16 @@ func runScan(args []string) int {
 	fs.StringArrayVarP(&targets, "target", "t", nil, "Target domain(s) (repeatable)")
 	fs.StringVarP(&file, "file", "f", "", "Read targets from file (one per line)")
 	fs.BoolVar(&stdin, "stdin", false, "Read targets from stdin")
-	fs.StringVarP(&mode, "mode", "m", "wide", "Scan mode: wide|narrow|fast|deep|osint")
-	fs.IntVar(&rate, "rate", 150, "Request rate hint")
+	fs.StringVarP(&mode, "mode", "m", "wide", "Probe discovered hosts (wide) or target only (narrow)")
+	fs.IntVar(&rate, "rate", 150, "Built-in probe dispatches per second (max 10,000)")
 	fs.IntVar(&threads, "threads", 30, "Concurrent workers")
 	fs.StringVar(&stages, "stages", "all", "Comma-separated stages: subdomains,http,ports,urls,vulns")
 	fs.StringVarP(&profile, "profile", "p", "balanced", "Workflow profile: passive|balanced|aggressive")
 	fs.BoolVarP(&quiet, "quiet", "q", false, "Suppress progress output")
-	fs.StringVar(&storage, "storage", "", "Storage root (default: ./storage)")
-	_ = fs.Parse(args)
+	fs.StringVar(&storage, "storage", "", "Storage root (default: user config directory)")
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
 
 	// Positional args are also targets.
 	for _, a := range fs.Args() {
@@ -118,6 +120,7 @@ func runScan(args []string) int {
 		cliui.Err("%v", err)
 		return 1
 	}
+	defer application.Store.Close()
 	config, err := cfg.Load(home)
 	if err != nil {
 		cliui.Err("loading config: %v", err)
@@ -135,6 +138,22 @@ func runScan(args []string) int {
 	}
 
 	applyProfile(profile, &mode, &rate, &threads, &stages)
+	switch strings.ToLower(mode) {
+	case "wide", "narrow":
+	default:
+		cliui.Err("invalid --mode %q", mode)
+		return 2
+	}
+	switch strings.ToLower(profile) {
+	case "passive", "balanced", "aggressive":
+	default:
+		cliui.Err("invalid --profile %q", profile)
+		return 2
+	}
+	if _, err := parseStagesStrict(stages); err != nil {
+		cliui.Err("%v", err)
+		return 2
+	}
 	if rate <= 0 {
 		cliui.Err("--rate must be > 0")
 		return 1
@@ -142,6 +161,14 @@ func runScan(args []string) int {
 	if threads <= 0 {
 		cliui.Err("--threads must be > 0")
 		return 1
+	}
+	if threads > 500 {
+		cliui.Err("--threads must be 500 or fewer")
+		return 2
+	}
+	if rate > 10000 {
+		cliui.Err("--rate must be 10,000 or fewer")
+		return 2
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -189,7 +216,9 @@ func runStatus(args []string) int {
 	var storage string
 	fs.IntVarP(&limit, "limit", "n", 50, "Number of recent scans to show")
 	fs.StringVar(&storage, "storage", "", "Storage root")
-	_ = fs.Parse(args)
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
 
 	home, err := macaronHome(storage)
 	if err != nil {
@@ -201,6 +230,7 @@ func runStatus(args []string) int {
 		cliui.Err("%v", err)
 		return 1
 	}
+	defer application.Store.Close()
 	out, err := application.ShowStatus(limit)
 	if err != nil {
 		cliui.Err("%v", err)
@@ -226,7 +256,9 @@ func runResults(args []string) int {
 	fs.StringVarP(&what, "what", "w", "all", "View: all|subdomains|live|ports|urls|js|vulns")
 	fs.IntVarP(&limit, "limit", "n", 50, "Output limit per category")
 	fs.StringVar(&storage, "storage", "", "Storage root")
-	_ = fs.Parse(args)
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
 
 	home, err := macaronHome(storage)
 	if err != nil {
@@ -238,6 +270,7 @@ func runResults(args []string) int {
 		cliui.Err("%v", err)
 		return 1
 	}
+	defer application.Store.Close()
 	out, err := application.ShowResults(domain, id, what, limit)
 	if err != nil {
 		cliui.Err("%v", err)
@@ -253,7 +286,9 @@ func runSetup(args []string) int {
 	fs := pflag.NewFlagSet("setup", pflag.ContinueOnError)
 	var install bool
 	fs.BoolVarP(&install, "install", "i", false, "Auto-install missing tools that support it")
-	_ = fs.Parse(args)
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
 
 	tools := app.SetupCatalog()
 	fmt.Print(app.RenderSetup(tools))
@@ -284,7 +319,9 @@ func runExport(args []string) int {
 	fs.StringVarP(&output, "output", "o", "", "Output file path")
 	fs.StringVarP(&domain, "domain", "d", "", "Filter by domain")
 	fs.StringVar(&storage, "storage", "", "Storage root")
-	_ = fs.Parse(args)
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
 
 	home, err := macaronHome(storage)
 	if err != nil {
@@ -296,6 +333,7 @@ func runExport(args []string) int {
 		cliui.Err("%v", err)
 		return 1
 	}
+	defer application.Store.Close()
 	path, err := application.Export(output, domain)
 	if err != nil {
 		cliui.Err("%v", err)
@@ -311,7 +349,9 @@ func runConfig(args []string) int {
 	fs := pflag.NewFlagSet("config", pflag.ContinueOnError)
 	var storage string
 	fs.StringVar(&storage, "storage", "", "Storage root")
-	_ = fs.Parse(args)
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
 
 	home, err := macaronHome(storage)
 	if err != nil {
@@ -323,6 +363,7 @@ func runConfig(args []string) int {
 		cliui.Err("%v", err)
 		return 1
 	}
+	defer application.Store.Close()
 	fmt.Print(application.ShowConfig())
 	return 0
 }
@@ -357,7 +398,9 @@ func apiList(args []string) int {
 	fs := pflag.NewFlagSet("api list", pflag.ContinueOnError)
 	var storage string
 	fs.StringVar(&storage, "storage", "", "Storage root")
-	_ = fs.Parse(args)
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
 
 	home, err := macaronHome(storage)
 	if err != nil {
@@ -385,7 +428,9 @@ func apiSet(args []string) int {
 	fs := pflag.NewFlagSet("api set", pflag.ContinueOnError)
 	var storage string
 	fs.StringVar(&storage, "storage", "", "Storage root")
-	_ = fs.Parse(args)
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
 
 	kvs := fs.Args()
 	if len(kvs) == 0 {
@@ -402,17 +447,27 @@ func apiSet(args []string) int {
 		cliui.Err("%v", err)
 		return 1
 	}
-	cfg.ApplySetAPI(config, kvs)
+	count, err := cfg.ApplySetAPI(config, kvs)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 2
+	}
 	if err := cfg.Save(home, config); err != nil {
 		cliui.Err("%v", err)
 		return 1
 	}
-	cliui.OK("saved %d key(s) → %s", len(kvs), filepath.Join(home, "config.yaml"))
+	cliui.OK("saved %d key(s) → %s", count, filepath.Join(home, "config.yaml"))
 	return 0
 }
 
 func apiUnset(args []string) int {
-	// Reuse set with empty value to delete.
+	fs := pflag.NewFlagSet("api unset", pflag.ContinueOnError)
+	var storage string
+	fs.StringVar(&storage, "storage", "", "Storage root")
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
+	args = fs.Args()
 	if len(args) == 0 {
 		cliui.Err("usage: macaron api unset key [key ...]")
 		return 1
@@ -422,14 +477,36 @@ func apiUnset(args []string) int {
 	for i, k := range args {
 		kvs[i] = strings.TrimSuffix(k, "=") + "="
 	}
-	return apiSet(kvs)
+	home, err := macaronHome(storage)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	config, err := cfg.Load(home)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	count, err := cfg.ApplySetAPI(config, kvs)
+	if err != nil {
+		cliui.Err("%v", err)
+		return 2
+	}
+	if err := cfg.Save(home, config); err != nil {
+		cliui.Err("%v", err)
+		return 1
+	}
+	cliui.OK("removed %d key(s)", count)
+	return 0
 }
 
 func apiImport(args []string) int {
 	fs := pflag.NewFlagSet("api import", pflag.ContinueOnError)
 	var storage string
 	fs.StringVar(&storage, "storage", "", "Storage root")
-	_ = fs.Parse(args)
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
 
 	home, err := macaronHome(storage)
 	if err != nil {
@@ -461,7 +538,9 @@ func apiBulk(args []string) int {
 	var file, storage string
 	fs.StringVarP(&file, "file", "f", "", "YAML file with api_keys map (required)")
 	fs.StringVar(&storage, "storage", "", "Storage root")
-	_ = fs.Parse(args)
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
 
 	if file == "" && len(fs.Args()) > 0 {
 		file = fs.Args()[0]
@@ -501,7 +580,9 @@ func runUninstall(args []string) int {
 	var yes bool
 	fs.StringVar(&storage, "storage", "", "Storage root to also remove (optional)")
 	fs.BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompt")
-	_ = fs.Parse(args)
+	if code := parseFlags(fs, args); code >= 0 {
+		return code
+	}
 
 	execPath, err := os.Executable()
 	if err != nil {
@@ -579,7 +660,7 @@ scan flags:
   -t, --target DOMAIN    target domain (repeatable)
   -f, --file FILE        read targets from file
       --stdin            read targets from stdin
-  -m, --mode MODE        wide|narrow|fast|deep|osint  (default: wide)
+  -m, --mode MODE        wide|narrow  (default: wide)
   -p, --profile NAME     passive|balanced|aggressive  (default: balanced)
       --stages LIST      subdomains,http,ports,urls,vulns  (default: all)
       --rate N           request rate hint  (default: 150)
@@ -638,7 +719,8 @@ func printGuide() {
    macaron api import
 
 2. enumerate with intent:
-   macaron scan -t target.com -p passive        # low-noise, passive only
+   macaron scan -t target.com -p passive        # lower rate; still probes HTTP hosts
+   macaron scan -t target.com --stages subdomains # enumeration only
    macaron scan -t target.com -p balanced       # default practical pipeline
    macaron scan -t target.com -p aggressive \
      --stages subdomains,http,ports,urls,vulns  # full depth
@@ -652,9 +734,9 @@ func printGuide() {
    macaron export -o target.json
 
 profiles:
-  passive     osint-only, low rate, no active probing
+  passive     lower rate and concurrency; HTTP probing still runs
   balanced    default — enumeration + probing + vuln scan
-  aggressive  max concurrency, all stages, authorized testing only
+  aggressive  higher concurrency, all stages, authorized testing only
 
 authorized use only.
 `)
@@ -691,30 +773,57 @@ func macaronHome(override string) (string, error) {
 	if strings.TrimSpace(override) != "" {
 		return filepath.Clean(override), nil
 	}
-	cwd, err := os.Getwd()
+	if env := strings.TrimSpace(os.Getenv("MACARON_HOME")); env != "" {
+		return filepath.Clean(env), nil
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		legacy := filepath.Join(cwd, "storage")
+		if info, err := os.Stat(legacy); err == nil && info.IsDir() {
+			return legacy, nil
+		}
+	}
+	configDir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(cwd, "storage"), nil
+	return filepath.Join(configDir, "macaron"), nil
+}
+
+func parseFlags(fs *pflag.FlagSet, args []string) int {
+	fs.SetOutput(os.Stderr)
+	err := fs.Parse(args)
+	if err == nil {
+		return -1
+	}
+	if errors.Is(err, pflag.ErrHelp) {
+		return 0
+	}
+	return 2
+}
+
+func parseStagesStrict(raw string) (map[string]bool, error) {
+	valid := map[string]bool{"subdomains": true, "http": true, "ports": true, "urls": true, "vulns": true}
+	if strings.EqualFold(strings.TrimSpace(raw), "all") || strings.TrimSpace(raw) == "" {
+		return app.ParseStages("all"), nil
+	}
+	parsed := map[string]bool{}
+	for _, item := range strings.Split(raw, ",") {
+		stage := strings.ToLower(strings.TrimSpace(item))
+		if !valid[stage] {
+			return nil, fmt.Errorf("unknown stage %q", item)
+		}
+		parsed[stage] = true
+	}
+	if len(parsed) == 0 {
+		return nil, errors.New("no scan stages selected")
+	}
+	return parsed, nil
 }
 
 func looksLikeDomain(s string) bool {
-	if strings.HasPrefix(s, "-") || strings.Contains(s, " ") {
+	if strings.HasPrefix(s, "-") {
 		return false
 	}
-	parts := strings.Split(s, ".")
-	if len(parts) < 2 {
-		return false
-	}
-	tld := strings.ToLower(parts[len(parts)-1])
-	// TLD must be alphabetic-only and at least 2 characters.
-	if len(tld) < 2 {
-		return false
-	}
-	for _, c := range tld {
-		if c < 'a' || c > 'z' {
-			return false
-		}
-	}
-	return true
+	targets, err := app.ParseTargets([]string{s}, "", false)
+	return err == nil && len(targets) == 1
 }

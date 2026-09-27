@@ -5,13 +5,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 if ! command -v go >/dev/null 2>&1; then
-  echo "[!] Go is not installed. Install Go 1.22+ and rerun."
+  echo "[!] Go is not installed. Install Go 1.25+ and rerun."
+  exit 1
+fi
+
+GO_VERSION="$(go env GOVERSION)"
+if [ "$(printf '%s\n' go1.25.0 "$GO_VERSION" | sort -V | head -n1)" != "go1.25.0" ]; then
+  echo "[!] Macaron requires Go 1.25+. Found $GO_VERSION."
   exit 1
 fi
 
 mkdir -p "$HOME/.local/bin"
 echo "[macaron] building binary..."
-go mod tidy
 go build -o "$HOME/.local/bin/macaron" ./cmd/macaron
 chmod +x "$HOME/.local/bin/macaron"
 
@@ -19,7 +24,7 @@ PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
 add_to_profile() {
   local profile="$1"
-  if [ -f "$profile" ] && ! grep -qF 'HOME/.local/bin' "$profile" 2>/dev/null; then
+  if [ ! -f "$profile" ] || ! grep -qF 'HOME/.local/bin' "$profile" 2>/dev/null; then
     echo "$PATH_LINE" >> "$profile"
     echo "[macaron] added PATH entry to $profile"
   fi

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,6 +71,9 @@ func (a *App) Scan(ctx context.Context, args ScanArgs) ([]model.ScanResult, erro
 	}
 	results := make([]model.ScanResult, 0, len(args.Targets))
 	for _, t := range args.Targets {
+		if err := ctx.Err(); err != nil {
+			return results, err
+		}
 		res, err := a.Engine.ScanTarget(ctx, t, engine.Options{
 			Mode:          args.Mode,
 			Rate:          args.Rate,
@@ -79,10 +84,10 @@ func (a *App) Scan(ctx context.Context, args ScanArgs) ([]model.ScanResult, erro
 			Progress:      args.Progress,
 		})
 		if err != nil {
-			return nil, err
+			return results, fmt.Errorf("scan %s: %w", t, err)
 		}
 		if err := a.Store.SaveScan(res); err != nil {
-			return nil, err
+			return results, fmt.Errorf("save scan %s: %w", t, err)
 		}
 		results = append(results, res)
 	}
@@ -118,6 +123,15 @@ func (a *App) ShowStatus(limit int) (string, error) {
 }
 
 func (a *App) ShowResults(target string, id string, what string, limit int) (string, error) {
+	what = strings.ToLower(strings.TrimSpace(what))
+	if what == "" {
+		what = "all"
+	}
+	switch what {
+	case "all", "subdomains", "live", "ports", "urls", "js", "vulns":
+	default:
+		return "", fmt.Errorf("unknown result view %q", what)
+	}
 	var res *model.ScanResult
 	var err error
 	if id != "" {
@@ -137,7 +151,7 @@ func (a *App) ShowResults(target string, id string, what string, limit int) (str
 	if limit <= 0 {
 		limit = 50
 	}
-	return formatResults(*res, strings.ToLower(what), limit), nil
+	return formatResults(*res, what, limit), nil
 }
 
 func (a *App) Export(path, target string) (string, error) {
@@ -157,9 +171,15 @@ func (a *App) ShowConfig() string {
 func ParseTargets(raw []string, filePath string, stdin bool) ([]string, error) {
 	seen := map[string]struct{}{}
 	out := make([]string, 0)
+	invalid := make([]string, 0)
 	add := func(t string) {
+		t = strings.TrimSpace(t)
+		if t == "" || strings.HasPrefix(t, "#") {
+			return
+		}
 		t = normalizeTarget(t)
 		if t == "" {
+			invalid = append(invalid, "invalid target")
 			return
 		}
 		if _, ok := seen[t]; ok {
@@ -182,11 +202,15 @@ func ParseTargets(raw []string, filePath string, stdin bool) ([]string, error) {
 	}
 	if stdin {
 		b, err := ioReadAllStdin()
-		if err == nil {
-			for _, line := range strings.Split(string(b), "\n") {
-				add(line)
-			}
+		if err != nil {
+			return nil, err
 		}
+		for _, line := range strings.Split(string(b), "\n") {
+			add(line)
+		}
+	}
+	if len(invalid) > 0 {
+		return nil, fmt.Errorf("one or more targets are invalid (expected a domain, IP, or bare origin URL)")
 	}
 	sort.Strings(out)
 	return out, nil
@@ -368,14 +392,30 @@ func ioReadAllStdin() ([]byte, error) {
 }
 
 func normalizeTarget(t string) string {
-	t = strings.TrimSpace(strings.ToLower(t))
-	t = strings.TrimPrefix(t, "https://")
-	t = strings.TrimPrefix(t, "http://")
-	if i := strings.IndexRune(t, '/'); i > -1 {
-		t = t[:i]
+	t = strings.TrimSpace(t)
+	if strings.Contains(t, "://") {
+		u, err := url.Parse(t)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Port() != "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return ""
+		}
+		t = u.Hostname()
 	}
-	if i := strings.IndexRune(t, ':'); i > -1 {
-		t = t[:i]
+	t = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(t)), ".")
+	if ip := net.ParseIP(t); ip != nil {
+		return ip.String()
+	}
+	if len(t) > 253 || t == "" {
+		return ""
+	}
+	for _, label := range strings.Split(t, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return ""
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return ""
+			}
+		}
 	}
 	return t
 }

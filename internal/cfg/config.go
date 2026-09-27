@@ -1,6 +1,7 @@
 package cfg
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,6 +30,9 @@ func Load(storageRoot string) (*Config, error) {
 	if err := yaml.Unmarshal(b, cfg); err != nil {
 		return nil, err
 	}
+	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrPermission) {
+		return nil, err
+	}
 	if cfg.APIKeys == nil {
 		cfg.APIKeys = map[string]string{}
 	}
@@ -37,7 +41,10 @@ func Load(storageRoot string) (*Config, error) {
 
 // Save writes config to storageRoot/config.yaml.
 func Save(storageRoot string, cfg *Config) error {
-	if err := os.MkdirAll(storageRoot, 0o755); err != nil {
+	if err := os.MkdirAll(storageRoot, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(storageRoot, 0o700); err != nil && !errors.Is(err, os.ErrPermission) {
 		return err
 	}
 	if cfg.APIKeys == nil {
@@ -47,30 +54,71 @@ func Save(storageRoot string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(storageRoot, "config.yaml"), b, 0o644)
+	return writePrivateFile(filepath.Join(storageRoot, "config.yaml"), b)
+}
+
+func writePrivateFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".macaron-config-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // ApplySetAPI merges key=value pairs into config. Empty value removes the key.
-func ApplySetAPI(cfg *Config, kvs []string) {
+func ApplySetAPI(cfg *Config, kvs []string) (int, error) {
 	if cfg.APIKeys == nil {
 		cfg.APIKeys = map[string]string{}
 	}
+	count := 0
 	for _, kv := range kvs {
 		parts := strings.SplitN(strings.TrimSpace(kv), "=", 2)
 		if len(parts) != 2 {
-			continue
+			return count, fmt.Errorf("invalid key assignment %q: expected key=value", kv)
 		}
 		k := strings.ToLower(strings.TrimSpace(parts[0]))
 		v := strings.TrimSpace(parts[1])
-		if k == "" {
-			continue
+		if !validKeyName(k) {
+			return count, fmt.Errorf("invalid API key name %q", parts[0])
 		}
 		if v == "" {
 			delete(cfg.APIKeys, k)
+			count++
 			continue
 		}
 		cfg.APIKeys[k] = v
+		count++
 	}
+	return count, nil
+}
+
+func validKeyName(k string) bool {
+	if k == "" {
+		return false
+	}
+	for _, c := range k {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // BulkLoadFile reads a YAML file of the form `api_keys: {key: value}` and
@@ -86,13 +134,18 @@ func BulkLoadFile(cfg *Config, path string) (int, error) {
 		if cfg.APIKeys == nil {
 			cfg.APIKeys = map[string]string{}
 		}
+		count := 0
 		for k, v := range bulk.APIKeys {
 			k = strings.ToLower(strings.TrimSpace(k))
-			if k != "" && strings.TrimSpace(v) != "" {
+			if validKeyName(k) && strings.TrimSpace(v) != "" {
 				cfg.APIKeys[k] = strings.TrimSpace(v)
+				count++
 			}
 		}
-		return len(bulk.APIKeys), nil
+		if count == 0 {
+			return 0, fmt.Errorf("no valid API keys found in %s", path)
+		}
+		return count, nil
 	}
 	// Try flat map.
 	var flat map[string]string
@@ -103,10 +156,13 @@ func BulkLoadFile(cfg *Config, path string) (int, error) {
 		count := 0
 		for k, v := range flat {
 			k = strings.ToLower(strings.TrimSpace(k))
-			if k != "" && strings.TrimSpace(v) != "" {
+			if validKeyName(k) && strings.TrimSpace(v) != "" {
 				cfg.APIKeys[k] = strings.TrimSpace(v)
 				count++
 			}
+		}
+		if count == 0 {
+			return 0, fmt.Errorf("no valid API keys found in %s", path)
 		}
 		return count, nil
 	}
