@@ -14,13 +14,17 @@ import (
 	"github.com/root-Manas/macaron/internal/model"
 	_ "modernc.org/sqlite"
 )
+
 type Store struct {
 	baseDir string
 	db      *sql.DB
 }
 
 func New(baseDir string) (*Store, error) {
-	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(baseDir, 0o700); err != nil {
 		return nil, err
 	}
 	dbPath := filepath.Join(baseDir, "macaron.db")
@@ -38,8 +42,14 @@ func New(baseDir string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := os.Chmod(dbPath, 0o600); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
 }
+
+func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) initSchema() error {
 	_, err := s.db.Exec(`
@@ -96,14 +106,20 @@ ON CONFLICT(id) DO UPDATE SET
 
 	// Keep a per-target folder mirror for easy file browsing.
 	targetDir := filepath.Join(s.baseDir, sanitizeFilename(result.Target))
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
 		return err
 	}
-	pretty, _ := json.MarshalIndent(result, "", "  ")
-	if err := os.WriteFile(filepath.Join(targetDir, result.ID+".json"), pretty, 0o644); err != nil {
+	if err := os.Chmod(targetDir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(targetDir, "latest.txt"), []byte(result.ID), 0o644)
+	pretty, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := writePrivate(filepath.Join(targetDir, result.ID+".json"), pretty); err != nil {
+		return err
+	}
+	return writePrivate(filepath.Join(targetDir, "latest.txt"), []byte(result.ID))
 }
 
 func (s *Store) GetByID(id string) (*model.ScanResult, error) {
@@ -215,14 +231,41 @@ func (s *Store) Export(path string, target string) (string, error) {
 	if path == "" {
 		path = filepath.Join(s.baseDir, fmt.Sprintf("export_%s.json", time.Now().Format("20060102_150405")))
 	}
-	if err := os.WriteFile(path, b, 0o644); err != nil {
+	if err := writePrivate(path, b); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-// Analytics returns aggregated statistics across all scans for display in the
-// dashboard analytics tab.
+func writePrivate(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".macaron-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+// Analytics aggregates findings and scan durations across saved scans.
 func (s *Store) Analytics() (model.AnalyticsReport, error) {
 	report := model.AnalyticsReport{}
 

@@ -93,7 +93,7 @@ type SeverityCount struct {
 	Count    int    `json:"count"`
 }
 
-// AnalyticsReport is the response returned by /api/analytics.
+// AnalyticsReport contains aggregated scan statistics.
 type AnalyticsReport struct {
 	ScanCount     int             `json:"scan_count"`
 	AvgDurationMS int64           `json:"avg_duration_ms"`
