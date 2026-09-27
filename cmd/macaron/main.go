@@ -93,16 +93,16 @@ func runScan(args []string) int {
 	)
 	fs.StringArrayVarP(&targets, "target", "t", nil, "Target domain(s) (repeatable)")
 	fs.StringVarP(&file, "file", "f", "", "Read targets from file (one per line)")
-	fs.BoolVar(&stdin, "stdin", false, "Read targets from stdin")
+	fs.BoolVarP(&stdin, "stdin", "i", false, "Read targets from stdin")
 	fs.StringVarP(&mode, "mode", "m", "wide", "Probe discovered hosts (wide) or target only (narrow)")
-	fs.IntVar(&rate, "rate", 150, "Built-in probe dispatches per second (max 10,000)")
-	fs.IntVar(&threads, "threads", 30, "Concurrent workers")
-	fs.IntVar(&targetWorkers, "target-workers", 1, "Targets to scan concurrently")
-	fs.StringVar(&stages, "stages", "all", "Comma-separated stages: subdomains,http,ports,urls,vulns")
+	fs.IntVarP(&rate, "rate", "r", 150, "Built-in probe dispatches per second (max 10,000)")
+	fs.IntVarP(&threads, "threads", "T", 30, "Concurrent workers")
+	fs.IntVarP(&targetWorkers, "target-workers", "W", 1, "Targets to scan concurrently")
+	fs.StringVarP(&stages, "stages", "s", "all", "Comma-separated stages: subdomains,http,ports,urls,vulns")
 	fs.StringVarP(&profile, "profile", "p", "balanced", "Workflow profile: passive|balanced|aggressive")
 	fs.BoolVarP(&quiet, "quiet", "q", false, "Suppress progress output")
-	fs.BoolVar(&jsonOutput, "json", false, "Output scan results as machine-readable JSON")
-	fs.StringVar(&storage, "storage", "", "Storage root (default: user config directory)")
+	fs.BoolVarP(&jsonOutput, "json", "j", false, "Output scan results as machine-readable JSON")
+	fs.StringVarP(&storage, "storage", "S", "", "Storage root (default: user config directory)")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -241,8 +241,8 @@ func runStatus(args []string) int {
 	var storage string
 	var jsonOutput bool
 	fs.IntVarP(&limit, "limit", "n", 50, "Number of recent scans to show")
-	fs.StringVar(&storage, "storage", "", "Storage root")
-	fs.BoolVar(&jsonOutput, "json", false, "Output machine-readable JSON")
+	fs.StringVarP(&storage, "storage", "S", "", "Storage root")
+	fs.BoolVarP(&jsonOutput, "json", "j", false, "Output machine-readable JSON")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -285,11 +285,11 @@ func runResults(args []string) int {
 		jsonOutput bool
 	)
 	fs.StringVarP(&domain, "domain", "d", "", "Filter by target domain")
-	fs.StringVar(&id, "id", "", "Fetch specific scan by ID")
+	fs.StringVarP(&id, "id", "i", "", "Fetch specific scan by ID")
 	fs.StringVarP(&what, "what", "w", "all", "View: all|subdomains|live|ports|urls|js|vulns")
 	fs.IntVarP(&limit, "limit", "n", 50, "Output limit per category")
-	fs.StringVar(&storage, "storage", "", "Storage root")
-	fs.BoolVar(&jsonOutput, "json", false, "Output the full scan as machine-readable JSON")
+	fs.StringVarP(&storage, "storage", "S", "", "Storage root")
+	fs.BoolVarP(&jsonOutput, "json", "j", false, "Output the full scan as machine-readable JSON")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -357,7 +357,7 @@ func runExport(args []string) int {
 	var output, domain, storage string
 	fs.StringVarP(&output, "output", "o", "", "Output file path")
 	fs.StringVarP(&domain, "domain", "d", "", "Filter by domain")
-	fs.StringVar(&storage, "storage", "", "Storage root")
+	fs.StringVarP(&storage, "storage", "S", "", "Storage root")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -387,7 +387,7 @@ func runExport(args []string) int {
 func runConfig(args []string) int {
 	fs := pflag.NewFlagSet("config", pflag.ContinueOnError)
 	var storage string
-	fs.StringVar(&storage, "storage", "", "Storage root")
+	fs.StringVarP(&storage, "storage", "S", "", "Storage root")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -436,7 +436,7 @@ func runAPI(args []string) int {
 func apiList(args []string) int {
 	fs := pflag.NewFlagSet("api list", pflag.ContinueOnError)
 	var storage string
-	fs.StringVar(&storage, "storage", "", "Storage root")
+	fs.StringVarP(&storage, "storage", "S", "", "Storage root")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -466,7 +466,7 @@ func apiList(args []string) int {
 func apiSet(args []string) int {
 	fs := pflag.NewFlagSet("api set", pflag.ContinueOnError)
 	var storage string
-	fs.StringVar(&storage, "storage", "", "Storage root")
+	fs.StringVarP(&storage, "storage", "S", "", "Storage root")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -502,7 +502,7 @@ func apiSet(args []string) int {
 func apiUnset(args []string) int {
 	fs := pflag.NewFlagSet("api unset", pflag.ContinueOnError)
 	var storage string
-	fs.StringVar(&storage, "storage", "", "Storage root")
+	fs.StringVarP(&storage, "storage", "S", "", "Storage root")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -542,7 +542,7 @@ func apiUnset(args []string) int {
 func apiImport(args []string) int {
 	fs := pflag.NewFlagSet("api import", pflag.ContinueOnError)
 	var storage string
-	fs.StringVar(&storage, "storage", "", "Storage root")
+	fs.StringVarP(&storage, "storage", "S", "", "Storage root")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -576,7 +576,7 @@ func apiBulk(args []string) int {
 	fs := pflag.NewFlagSet("api bulk", pflag.ContinueOnError)
 	var file, storage string
 	fs.StringVarP(&file, "file", "f", "", "YAML file with api_keys map (required)")
-	fs.StringVar(&storage, "storage", "", "Storage root")
+	fs.StringVarP(&storage, "storage", "S", "", "Storage root")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -617,7 +617,7 @@ func runUninstall(args []string) int {
 	fs := pflag.NewFlagSet("uninstall", pflag.ContinueOnError)
 	var storage string
 	var yes bool
-	fs.StringVar(&storage, "storage", "", "Storage root to also remove (optional)")
+	fs.StringVarP(&storage, "storage", "S", "", "Storage root to also remove (optional)")
 	fs.BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompt")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
@@ -698,15 +698,16 @@ commands:
 scan flags:
   -t, --target DOMAIN    target domain (repeatable)
   -f, --file FILE        read targets from file
-      --stdin            read targets from stdin
+  -i, --stdin            read targets from stdin
   -m, --mode MODE        wide|narrow  (default: wide)
   -p, --profile NAME     passive|balanced|aggressive  (default: balanced)
-      --stages LIST      subdomains,http,ports,urls,vulns  (default: all)
-      --rate N           request rate hint  (default: 150)
-      --threads N        workers  (default: 30)
-      --target-workers N targets scanned concurrently (default: 1)
+  -s, --stages LIST      subdomains,http,ports,urls,vulns  (default: all)
+  -r, --rate N           request rate hint  (default: 150)
+  -T, --threads N        workers  (default: 30)
+  -W, --target-workers N targets scanned concurrently (default: 1)
   -q, --quiet            suppress progress output
-      --storage DIR      custom storage root
+  -j, --json              machine-readable JSON output
+  -S, --storage DIR      custom storage root
 
 api subcommands:
   macaron api list

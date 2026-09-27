@@ -58,8 +58,12 @@ cat targets.txt | ./macaron scan --stdin
 | `--rate` | `150` | Built-in probe dispatches per second, capped at 10,000 |
 | `--threads` | `30` | Concurrent workers, maximum 500 |
 | `--target-workers` | `1` | Number of targets scanned concurrently, maximum 50 |
+| `-r`, `-T`, `-W`, `-s` | — | Short aliases for rate, threads, target-workers, and stages |
 | `-q, --quiet` | off | Suppress progress display |
 | `--storage` | user config directory | Override the data directory |
+
+Common compact forms include `-t`, `-f`, `-p`, `-q`, `-j`, and `-S`. Long
+forms remain supported for readability and scripts.
 
 `--mode wide` probes all discovered hosts. `--mode narrow` limits active HTTP and port probes to the target itself. Use profiles to adjust concurrency and stage selection.
 
