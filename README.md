@@ -1,91 +1,204 @@
 # macaron
 
-Macaron is a command-line reconnaissance workflow that collects subdomains, checks HTTP availability, scans common TCP ports, discovers URLs, and can run Nuclei against live hosts. It saves scan history locally in SQLite and JSON.
+Macaron is a CLI-only reconnaissance workflow for authorized security testing. It
+collects subdomains, probes HTTP services, scans common TCP ports, discovers URLs,
+and optionally runs Nuclei against live hosts. Scan history is stored locally in
+SQLite with private JSON mirrors for convenient inspection.
 
-Use it only for systems you own or are authorized to assess. Port checks, HTTP probes, crawling, and Nuclei are active requests. The passive profile still probes HTTP hosts; use `--stages subdomains` for enumeration without those active stages.
+Use Macaron only against systems you own or are explicitly authorized to assess.
+HTTP probes, port checks, crawling, and vulnerability templates generate active
+requests. The `passive` profile still performs HTTP and URL work; use
+`--stages subdomains` when you need subdomain enumeration only.
 
 ## Install
 
-Macaron requires Go 1.25 or newer to build. In Linux or WSL:
+Macaron requires Go 1.25 or newer:
 
 ```sh
 git clone https://github.com/root-Manas/macaron.git
 cd macaron
-go build -o macaron ./cmd/macaron
+go build -trimpath -o macaron ./cmd/macaron
 ```
 
-The `install.sh` script builds and installs to `~/.local/bin`. Macaron's external recon tools are optional; install the tools you need and make sure they are on `PATH`. `macaron setup` shows which tools are available. `macaron setup --install` installs missing Go-based tools on Linux only.
+The optional installer builds the binary and installs it to `~/.local/bin`:
+
+```sh
+./install.sh
+```
+
+External reconnaissance tools are optional. `macaron setup` reports their
+availability, and `macaron setup --install` installs supported Go-based tools on
+Linux. Tools must be available on `PATH` when a scan runs.
 
 ## Quick start
 
 ```sh
-./macaron scan -t example.com
-./macaron scan -t example.com --json
-./macaron status
-./macaron status --json
-./macaron results -d example.com -w live
-./macaron results -d example.com --json
-./macaron export -o example.json
+macaron scan -t example.com
+macaron status
+macaron results -d example.com -w live
+macaron export -o example.json
 ```
 
-Targets may be domain names, IP addresses, or bare origin URLs such as `https://example.com`. URL paths, credentials, query strings, and fragments are rejected. Target lists can come from flags, a file, or stdin:
+Every command supports `--help`. Human-readable output is the default; use
+`--json` where supported for shell pipelines and automation.
+
+## Command reference
+
+| Command | Purpose |
+| --- | --- |
+| `scan` | Run the reconnaissance pipeline for one or more targets |
+| `status` | Show recent scan history |
+| `results` | Inspect one scan or the latest scan for a target |
+| `export` | Export saved scans as JSON |
+| `setup` | Inspect or install optional external tools |
+| `config` | Show active storage and configuration paths |
+| `api` | Manage API keys used by optional providers |
+| `uninstall` | Remove the installed binary and optionally its storage |
+| `guide` | Print a first-principles workflow guide |
+| `version` | Print the Macaron version |
+
+Unknown positional arguments that look like domains are accepted as legacy
+scan targets, so `macaron example.com` remains supported.
+
+## Targets
+
+Targets can be domains, IP addresses, or bare HTTP(S) origins:
 
 ```sh
-./macaron scan -t example.com -t example.org
-./macaron scan -t example.com -t example.org --target-workers 2
-./macaron scan --file targets.txt
-cat targets.txt | ./macaron scan --stdin
+macaron scan -t example.com -t example.org
+macaron scan --file targets.txt
+cat targets.txt | macaron scan --stdin
+macaron scan example.com
 ```
 
-## Scans
+Target files are one target per line. Blank lines and lines beginning with `#`
+are ignored. Duplicate targets are removed and the final target list is sorted.
+Paths, credentials, ports, query strings, and fragments in URL input are rejected;
+`https://example.com` is accepted, while `https://example.com/path` is not.
+
+## Scanning
 
 ```sh
-./macaron scan -t example.com --profile passive
-./macaron scan -t example.com --profile balanced
-./macaron scan -t example.com --profile aggressive --stages subdomains,http,ports,urls,vulns
+# Conservative enumeration and web collection
+macaron scan -t example.com -p passive
+
+# Standard authorized assessment
+macaron scan -t example.com -p balanced
+
+# Higher throughput, all stages
+macaron scan -t example.com -p aggressive
+
+# Explicit stage selection
+macaron scan -t example.com -s subdomains,http,urls
+
+# Narrow mode probes only the original target
+macaron scan -t example.com -m narrow
+
+# Scan multiple targets concurrently
+macaron scan -f targets.txt -W 4
 ```
 
-`balanced` is the default. `passive` lowers concurrency and skips port and vulnerability stages, but still runs HTTP probes and URL collection; choose stages explicitly when you need a passive-only run. `aggressive` increases rate and concurrency. The rate setting caps dispatch to the built-in HTTP and native port probes; external tools may use their own rate controls.
+### Scan flags
 
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `-t, --target` | — | Target; repeatable |
-| `-f, --file` | — | Read one target per line |
-| `--stdin` | — | Read targets from stdin |
-| `-m, --mode` | `wide` | `wide` or `narrow` |
-| `-p, --profile` | `balanced` | `passive`, `balanced`, or `aggressive` |
-| `--stages` | `all` | Comma-separated `subdomains,http,ports,urls,vulns` |
-| `--rate` | `150` | Built-in probe dispatches per second, capped at 10,000 |
-| `--threads` | `30` | Concurrent workers, maximum 500 |
-| `--target-workers` | `1` | Number of targets scanned concurrently, maximum 50 |
-| `-r`, `-T`, `-W`, `-s` | — | Short aliases for rate, threads, target-workers, and stages |
-| `-q, --quiet` | off | Suppress progress display |
-| `--storage` | user config directory | Override the data directory |
+| Short | Long | Default | Purpose |
+| --- | --- | --- | --- |
+| `-t` | `--target` | - | Target; repeatable |
+| `-f` | `--file` | - | Read targets from a file |
+| `-i` | `--stdin` | off | Read targets from stdin |
+| `-m` | `--mode` | `wide` | Probe all discovered hosts or only the target with `narrow` |
+| `-p` | `--profile` | `balanced` | `passive`, `balanced`, or `aggressive` |
+| `-s` | `--stages` | `all` | Comma-separated stage list |
+| `-r` | `--rate` | `150` | Built-in probe dispatches per second; maximum 10,000 |
+| `-T` | `--threads` | `30` | Workers per stage; maximum 500 |
+| `-W` | `--target-workers` | `1` | Targets scanned concurrently; maximum 50 |
+| `-q` | `--quiet` | off | Suppress interactive progress |
+| `-j` | `--json` | off | Emit only machine-readable JSON |
+| `-S` | `--storage` | platform default | Override the storage directory |
 
-Common compact forms include `-t`, `-f`, `-p`, `-q`, `-j`, and `-S`. Long
-forms remain supported for readability and scripts.
+Long flags remain supported for readable scripts. `-j` automatically disables
+the banner and live progress renderer so stdout contains valid JSON only.
 
-`--mode wide` probes all discovered hosts. `--mode narrow` limits active HTTP and port probes to the target itself. Use profiles to adjust concurrency and stage selection.
+### Stages
 
-Scan, status, and result commands support `--json` for stable machine-readable output in
-shell pipelines and automation. JSON mode writes only JSON to stdout and disables the
-interactive banner/progress renderer. Human-readable tables remain the default.
+The available stages are:
 
-Macaron filters discovered names to the requested domain and its subdomains. HTTP probes stop at cross-host redirects to keep a probe from silently moving to another site. Missing optional tools are skipped. Failures from installed subdomain tools and Nuclei appear in scan warnings.
+| Stage | Behavior |
+| --- | --- |
+| `subdomains` | Certificate transparency, optional external tools, and configured providers |
+| `http` | Probe discovered hosts and collect status, title, and technology metadata |
+| `ports` | Scan common TCP ports, using Naabu when available and native checks otherwise |
+| `urls` | Collect URLs from live/discovered hosts and derive JavaScript files |
+| `vulns` | Run Nuclei against live hosts when Nuclei is installed |
+
+`--stages all` enables every stage. Missing optional tools are skipped with a
+warning. Installed tools that fail also produce scan warnings rather than silently
+appearing successful.
+
+`wide` probes all in-scope discovered hosts. `narrow` limits active HTTP and port
+work to the original target. `--target-workers` controls parallel targets while
+`--threads` controls workers inside each stage. Results retain input ordering.
+If one target fails, active work is cancelled and completed results are returned
+to the caller while the command exits non-zero.
+
+## Inspecting results
+
+```sh
+macaron status
+macaron status -n 20
+macaron status -j
+
+macaron results -d example.com
+macaron results -d example.com -w live -n 100
+macaron results -i SCAN_ID -w vulns
+macaron results -d example.com -j
+
+macaron export -d example.com -o example.json
+macaron export -o all-scans.json
+```
+
+Result views are `all`, `subdomains`, `live`, `ports`, `urls`, `js`, and `vulns`.
+`status -j`, `results -j`, and `scan -j` emit JSON only and are safe to pipe to
+`jq` or another program. Export files are written atomically with private
+permissions.
+
+## Storage, durability, and recovery
+
+The storage directory is selected in this order:
+
+1. Explicit `--storage` / `-S` value
+2. `MACARON_HOME` environment variable
+3. Existing `./storage` directory for legacy compatibility
+4. The operating system user config directory under `macaron`
+
+Explicit paths are used exactly as supplied. Macaron stores:
+
+```text
+macaron.db       authoritative SQLite database
+config.yaml      API key configuration
+<target>/        private per-target JSON mirrors
+```
+
+SQLite is authoritative. Scan metadata and payloads are committed in a
+transaction, WAL mode is enabled, and SQLite uses full synchronous durability.
+Per-target JSON files and `latest.txt` are written through private temporary files
+and atomic renames. On startup, missing mirrors are rebuilt from SQLite, so an
+interrupted mirror write does not lose scan history.
+
+Storage and configuration files are created with user-private permissions where
+the operating system supports them. API keys are masked by `api list` and should
+not be placed in shell history or committed to a repository.
 
 ## API keys
 
-Keys are stored in `config.yaml` under the Macaron data directory. On Unix-like systems the config and scan files are private to the current user. Subfinder receives a temporary provider config; Macaron does not edit Subfinder's own config.
-
 ```sh
-./macaron api set securitytrails=KEY shodan=KEY
-./macaron api list                 # values are masked
-./macaron api unset shodan
-./macaron api import               # import supported local tool configs
-./macaron api bulk --file keys.yaml
+macaron api set securitytrails=KEY shodan=KEY
+macaron api list
+macaron api unset shodan
+macaron api import
+macaron api bulk -f keys.yaml
 ```
 
-The bulk YAML format is:
+Bulk YAML accepts either form:
 
 ```yaml
 api_keys:
@@ -93,19 +206,19 @@ api_keys:
   shodan: YOUR_KEY
 ```
 
-Avoid putting live secrets in shell history or committing the bulk file.
+or a flat key/value map. Macaron creates a temporary provider configuration for
+Subfinder and removes it after the subprocess exits; it does not modify the
+user's existing Subfinder configuration.
 
-## Results and storage
+## Operational guidance
 
-```sh
-./macaron status
-./macaron results -d example.com
-./macaron results --id SCAN_ID -w vulns
-./macaron results -d example.com -w subdomains
-./macaron export --domain example.com --output example.json
-```
-
-Result views are `all`, `subdomains`, `live`, `ports`, `urls`, `js`, and `vulns`. Macaron stores `macaron.db`, `config.yaml`, and per-target JSON snapshots in the data directory. SQLite is authoritative; per-target files are atomic mirrors rebuilt automatically when missing after an interrupted write. The default is the operating system's user config directory under `macaron`; set `MACARON_HOME` or pass `--storage` to choose another location. `--storage` takes precedence. An existing `./storage` directory is retained for compatibility when neither override is set.
+- Start with `-p passive` or an explicit `-s` list to control request scope.
+- Use `-m narrow` when only the original target should receive active probes.
+- Keep `-W` modest to avoid multiplying per-target stage concurrency.
+- Use `-q` for quiet terminal runs and `-j` for automation.
+- Review warnings in saved results; skipped optional tools are not findings.
+- Use `macaron setup` before a production run to confirm tool availability.
+- Use `macaron config` to verify the active storage location.
 
 ## Development
 
@@ -115,4 +228,5 @@ go test ./...
 go vet ./...
 ```
 
-See [contributing](docs/contributing.md) for project conventions.
+The project is CLI-only. See [contributing](docs/contributing.md) for repository
+conventions.
