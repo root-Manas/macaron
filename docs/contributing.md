@@ -36,4 +36,4 @@ go build ./cmd/macaron
 
 - Prefer intent-first UX: setup -> scan -> inspect -> export.
 - Keep default output concise.
-- Keep deep detail queryable via status/results/dashboard.
+- Keep deep detail queryable via status/results/export.

@@ -226,8 +226,10 @@ func runStatus(args []string) int {
 	fs := pflag.NewFlagSet("status", pflag.ContinueOnError)
 	var limit int
 	var storage string
+	var jsonOutput bool
 	fs.IntVarP(&limit, "limit", "n", 50, "Number of recent scans to show")
 	fs.StringVar(&storage, "storage", "", "Storage root")
+	fs.BoolVar(&jsonOutput, "json", false, "Output machine-readable JSON")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -243,7 +245,12 @@ func runStatus(args []string) int {
 		return 1
 	}
 	defer application.Store.Close()
-	out, err := application.ShowStatus(limit)
+	var out string
+	if jsonOutput {
+		out, err = application.ShowStatusJSON(limit)
+	} else {
+		out, err = application.ShowStatus(limit)
+	}
 	if err != nil {
 		cliui.Err("%v", err)
 		return 1
@@ -257,17 +264,19 @@ func runStatus(args []string) int {
 func runResults(args []string) int {
 	fs := pflag.NewFlagSet("results", pflag.ContinueOnError)
 	var (
-		domain  string
-		id      string
-		what    string
-		limit   int
-		storage string
+		domain     string
+		id         string
+		what       string
+		limit      int
+		storage    string
+		jsonOutput bool
 	)
 	fs.StringVarP(&domain, "domain", "d", "", "Filter by target domain")
 	fs.StringVar(&id, "id", "", "Fetch specific scan by ID")
 	fs.StringVarP(&what, "what", "w", "all", "View: all|subdomains|live|ports|urls|js|vulns")
 	fs.IntVarP(&limit, "limit", "n", 50, "Output limit per category")
 	fs.StringVar(&storage, "storage", "", "Storage root")
+	fs.BoolVar(&jsonOutput, "json", false, "Output the full scan as machine-readable JSON")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
@@ -283,6 +292,9 @@ func runResults(args []string) int {
 		return 1
 	}
 	defer application.Store.Close()
+	if jsonOutput {
+		what = "all"
+	}
 	out, err := application.ShowResults(domain, id, what, limit)
 	if err != nil {
 		cliui.Err("%v", err)

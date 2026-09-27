@@ -33,7 +33,7 @@ func New(baseDir string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL;`); err != nil {
+	if _, err := db.Exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;`); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -41,6 +41,10 @@ func New(baseDir string) (*Store, error) {
 	if err := s.initSchema(); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if err := s.repairMirrors(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("repair storage mirrors: %w", err)
 	}
 	if err := os.Chmod(dbPath, 0o600); err != nil {
 		_ = db.Close()
@@ -79,7 +83,11 @@ func (s *Store) SaveScan(result model.ScanResult) error {
 		return err
 	}
 
-	_, err = s.db.Exec(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`
 INSERT INTO scans(id,target,mode,started_at,finished_at,duration_ms,stats_json,payload_json)
 VALUES(?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
@@ -101,6 +109,10 @@ ON CONFLICT(id) DO UPDATE SET
 		string(payloadJSON),
 	)
 	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 
@@ -120,6 +132,48 @@ ON CONFLICT(id) DO UPDATE SET
 		return err
 	}
 	return writePrivate(filepath.Join(targetDir, "latest.txt"), []byte(result.ID))
+}
+
+// repairMirrors rebuilds the human-browsable JSON mirror from SQLite. The
+// database is authoritative, so interrupted mirror writes are recoverable on
+// the next startup.
+func (s *Store) repairMirrors() error {
+	rows, err := s.db.Query(`SELECT payload_json FROM scans ORDER BY finished_at ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	latest := map[string]model.ScanResult{}
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return err
+		}
+		result, err := decodeScan(payload)
+		if err != nil {
+			return fmt.Errorf("decode scan mirror: %w", err)
+		}
+		targetDir := filepath.Join(s.baseDir, sanitizeFilename(result.Target))
+		pretty, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := writePrivate(filepath.Join(targetDir, result.ID+".json"), pretty); err != nil {
+			return err
+		}
+		latest[strings.ToLower(result.Target)] = *result
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, result := range latest {
+		targetDir := filepath.Join(s.baseDir, sanitizeFilename(result.Target))
+		if err := writePrivate(filepath.Join(targetDir, "latest.txt"), []byte(result.ID)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) GetByID(id string) (*model.ScanResult, error) {

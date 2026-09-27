@@ -5,7 +5,7 @@
 - [ ] `go test ./...`
 - [ ] `go vet ./...`
 - [ ] `go build ./cmd/macaron`
-- [ ] smoke test: setup, scan, status, results, serve
+- [ ] smoke test: setup, scan, status, results, export
 - [ ] README updated for changed flags/workflows
 
 ## Tag & publish
