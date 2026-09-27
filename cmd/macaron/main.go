@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -87,6 +88,7 @@ func runScan(args []string) int {
 		stages        string
 		profile       string
 		quiet         bool
+		jsonOutput    bool
 		storage       string
 	)
 	fs.StringArrayVarP(&targets, "target", "t", nil, "Target domain(s) (repeatable)")
@@ -99,6 +101,7 @@ func runScan(args []string) int {
 	fs.StringVar(&stages, "stages", "all", "Comma-separated stages: subdomains,http,ports,urls,vulns")
 	fs.StringVarP(&profile, "profile", "p", "balanced", "Workflow profile: passive|balanced|aggressive")
 	fs.BoolVarP(&quiet, "quiet", "q", false, "Suppress progress output")
+	fs.BoolVar(&jsonOutput, "json", false, "Output scan results as machine-readable JSON")
 	fs.StringVar(&storage, "storage", "", "Storage root (default: user config directory)")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
@@ -109,6 +112,9 @@ func runScan(args []string) int {
 		targets = append(targets, a)
 	}
 
+	if jsonOutput {
+		quiet = true
+	}
 	if !quiet {
 		cliui.PrintBanner(os.Stderr, version, false)
 	}
@@ -213,7 +219,14 @@ func runScan(args []string) int {
 		cliui.Err("scan failed: %v", err)
 		return 1
 	}
-	if !quiet {
+	if jsonOutput {
+		encoded, encodeErr := json.MarshalIndent(res, "", "  ")
+		if encodeErr != nil {
+			cliui.Err("encoding scan results: %v", encodeErr)
+			return 1
+		}
+		fmt.Println(string(encoded))
+	} else if !quiet {
 		fmt.Println(app.RenderScanSummary(res))
 		cliui.OK("finished %d target(s) in %s", len(res), time.Since(start).Round(time.Millisecond))
 	}
@@ -292,10 +305,12 @@ func runResults(args []string) int {
 		return 1
 	}
 	defer application.Store.Close()
+	var out string
 	if jsonOutput {
-		what = "all"
+		out, err = application.ShowResultsJSON(domain, id)
+	} else {
+		out, err = application.ShowResults(domain, id, what, limit)
 	}
-	out, err := application.ShowResults(domain, id, what, limit)
 	if err != nil {
 		cliui.Err("%v", err)
 		return 1

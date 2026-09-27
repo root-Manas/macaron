@@ -20,6 +20,7 @@ The `install.sh` script builds and installs to `~/.local/bin`. Macaron's externa
 
 ```sh
 ./macaron scan -t example.com
+./macaron scan -t example.com --json
 ./macaron status
 ./macaron status --json
 ./macaron results -d example.com -w live
@@ -62,8 +63,9 @@ cat targets.txt | ./macaron scan --stdin
 
 `--mode wide` probes all discovered hosts. `--mode narrow` limits active HTTP and port probes to the target itself. Use profiles to adjust concurrency and stage selection.
 
-Status and result commands support `--json` for stable machine-readable output in shell
-pipelines and automation. Human-readable tables remain the default.
+Scan, status, and result commands support `--json` for stable machine-readable output in
+shell pipelines and automation. JSON mode writes only JSON to stdout and disables the
+interactive banner/progress renderer. Human-readable tables remain the default.
 
 Macaron filters discovered names to the requested domain and its subdomains. HTTP probes stop at cross-host redirects to keep a probe from silently moving to another site. Missing optional tools are skipped. Failures from installed subdomain tools and Nuclei appear in scan warnings.
 
